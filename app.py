@@ -1340,6 +1340,7 @@ if not st.session_state.saved_api_key and _env_api_key:
 #  SIDEBAR
 # ─────────────────────────────────────────────
 with st.sidebar:
+    render_user_badge()  # 👤 Show Free/Pro badge
     st.markdown("## ⚙️ Настройки")
 
     # ── Тема ────────────────────────────────
@@ -1920,6 +1921,24 @@ st.divider()
 # ─────────────────────────────────────────────
 #  TABS
 # ─────────────────────────────────────────────
+
+# ── Построение табов с учётом тарифа ─────────────
+tab_labels = [
+    "🏁 Арбитраж",
+    "📊 Таблица",
+        "📈 График",
+    "💎 Value Bets",
+    "⚡ Live",
+        "📜 История",
+    "💰 Банкролл",
+    "🤖 AI помощник",
+]
+
+# Add lock icons for Free tier
+for i in range(2, len(tab_labels)):  # Lock tabs 2-7 for Free users
+    if is_tab_locked(i):
+        tab_labels[i] = f"🔒 {tab_labels[i]}"
+
 tab_signals, tab_arb, tab_table, tab_chart, tab_value, tab_live, tab_history, tab_bankroll, tab_ai = st.tabs([
     "🎯 Сигналы",
     "⚡ Арбитраж",
