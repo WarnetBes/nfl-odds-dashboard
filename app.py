@@ -28,6 +28,20 @@ try:
 except ImportError:
     GSPREAD_OK = False
 
+# ── Импорт чистых функций из utils.py ────────
+from utils import (
+    build_betting_signals as _build_betting_signals_v2,
+    compute_value_bets    as _compute_value_bets_v2,
+    find_arb_in_group,
+    arb_stakes,
+    arb_percentage,
+    kelly_stake,
+    kelly_fraction,
+    sport_ev_threshold,
+    sharp_books_in_group,
+    SPORT_EV_THRESHOLDS,
+)
+
 # ─────────────────────────────────────────────
 #  PAGE CONFIG
 # ─────────────────────────────────────────────
@@ -905,6 +919,14 @@ with st.sidebar:
             st.session_state["gs_read_triggered"] = True
 
     st.divider()
+    st.markdown("**💰 Управление банкроллом**")
+    bankroll = st.number_input(
+        "Банкролл ($)", min_value=10.0, max_value=1_000_000.0,
+        value=float(st.session_state.get("bankroll", 1000.0)),
+        step=100.0, format="%.0f",
+        help="Используется для расчёта Kelly Stake в Сигналах и Value Bets",
+    )
+    st.session_state["bankroll"] = bankroll
     fetch_btn = st.button("🔄 Загрузить коэффициенты", use_container_width=True, type="primary")
     st.divider()
     st.caption("📡 [The Odds API](https://the-odds-api.com) · [ESPN API](https://site.api.espn.com)")
@@ -1044,7 +1066,7 @@ if df.empty:
 # ─────────────────────────────────────────────
 cur_sport = st.session_state.last_sport or sport_label
 demo_tag  = " *(демо)*" if st.session_state.demo_mode else ""
-vdf_all   = compute_value_bets(df, has_draw, min_edge) if market_key == "h2h" else pd.DataFrame()
+vdf_all   = _compute_value_bets_v2(df, has_draw, min_edge, sport_cfg["key"], bankroll) if market_key == "h2h" else pd.DataFrame()
 vbets_cnt = len(vdf_all)
 
 c1, c2, c3, c4, c5 = st.columns(5)
@@ -1059,8 +1081,9 @@ st.divider()
 # ─────────────────────────────────────────────
 #  TABS
 # ─────────────────────────────────────────────
-tab_signals, tab_table, tab_chart, tab_value, tab_live, tab_history = st.tabs([
+tab_signals, tab_arb, tab_table, tab_chart, tab_value, tab_live, tab_history = st.tabs([
     "🎯 Сигналы",
+    "⚡ Арбитраж",
     "📋 Коэффициенты",
     "📊 Сравнение букмекеров",
     "💎 Value Bets",
@@ -1070,13 +1093,13 @@ tab_signals, tab_table, tab_chart, tab_value, tab_live, tab_history = st.tabs([
 
 DARK = dict(plot_bgcolor="#0d1b2a", paper_bgcolor="#0d1b2a", font_color="#e2e8f0")
 
-# ── TAB 0: BETTING SIGNALS ────────────────────────
+# ── TAB 0: BETTING SIGNALS v2 (Sharp EV + Kelly ¼ Stake) ─────────────────
 with tab_signals:
-    st.markdown("#### 🎯 На кого ставить — агрегированные сигналы")
+    st.markdown("#### 🎯 На кого ставить — Sharp EV сигналы (Pinnacle reference + Kelly ¼)")
     if market_key != "h2h":
         st.info("ℹ️ Сигналы работают только для рынка **H2H / 1X2**.")
     else:
-        sdf = build_betting_signals(df, has_draw)
+        sdf = _build_betting_signals_v2(df, has_draw, sport_cfg["key"])
         if sdf.empty:
             st.warning("Недостаточно данных для генерации сигналов. Загрузи коэффициенты сначала.")
         else:
@@ -1084,21 +1107,24 @@ with tab_signals:
             st.markdown(
                 """
 <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:12px">
+  <span style="background:#1a1a2e;border:2px solid #a78bfa;color:#a78bfa;padding:4px 12px;border-radius:20px;font-weight:700">⚡ SHARP (Pinnacle EV)</span>
   <span style="background:#065f46;color:#4ade80;padding:4px 12px;border-radius:20px;font-weight:700">🟢 СИЛЬНЫЙ (&ge;70 conf)</span>
   <span style="background:#713f12;color:#fde68a;padding:4px 12px;border-radius:20px;font-weight:700">🟡 УМЕРЕННЫЙ (&ge;40 conf)</span>
-  <span style="background:#1e3a5f;color:#93c5fd;padding:4px 12px;border-radius:20px;font-weight:700">🔵 СЛАБЫЙ (EV>0)</span>
-  <span style="background:#1e293b;color:#94a3b8;padding:4px 12px;border-radius:20px">⚪ НЕТ (нет преимущества)</span>
+  <span style="background:#1e3a5f;color:#93c5fd;padding:4px 12px;border-radius:20px;font-weight:700">🔵 СЛАБЫЙ (EV&gt;0)</span>
+  <span style="background:#1e293b;color:#94a3b8;padding:4px 12px;border-radius:20px">⚪ НЕТ</span>
 </div>""",
                 unsafe_allow_html=True,
             )
 
-            # Cards for each match
             for _, sig in sdf.iterrows():
-                conf = int(sig["_conf"]) if "_conf" in sig.index else int(sig.get("Уверенность", 0))
-                edge_val = float(sig["_edge"]) if "_edge" in sig.index else 0.0
+                conf       = int(sig["_conf"]) if "_conf" in sig.index else 0
+                edge_val   = float(sig["_edge"]) if "_edge" in sig.index else 0.0
                 signal_str = str(sig["Сигнал"])
+                is_sharp   = str(sig.get("Sharp Reference", "")).startswith("⚡")
 
-                if conf >= 70:
+                if is_sharp:
+                    card_bg, border, text_clr = "#1a1a2e", "#a78bfa", "#a78bfa"
+                elif conf >= 70:
                     card_bg, border, text_clr = "#0d2a1a", "#4ade80", "#4ade80"
                 elif conf >= 40:
                     card_bg, border, text_clr = "#2a1a00", "#fde68a", "#fde68a"
@@ -1107,11 +1133,30 @@ with tab_signals:
                 else:
                     card_bg, border, text_clr = "#111827", "#475569", "#94a3b8"
 
+                kelly_pct_str = str(sig.get("Kelly ¼ %", "0.00%"))
+                try:
+                    kelly_pct_val = float(kelly_pct_str.replace("%", ""))
+                    kelly_dollar  = round(bankroll * kelly_pct_val / 100, 2)
+                except Exception:
+                    kelly_pct_val = 0.0
+                    kelly_dollar  = 0.0
+
+                sharp_badge = (
+                    '<span style="background:#7c3aed;color:#fff;border-radius:6px;'
+                    'padding:2px 8px;font-size:11px;margin-left:8px">⚡ Sharp EV</span>'
+                ) if is_sharp else ""
+
+                kelly_cell_bg  = "#2d1f5e" if kelly_dollar > 0 else "#1e293b"
+                kelly_cell_brd = "border:1px solid #7c3aed;" if kelly_dollar > 0 else ""
+                kelly_color    = "#c4b5fd" if kelly_dollar > 0 else "#475569"
+                ev_color       = "#4ade80" if edge_val > 0 else "#f87171"
+                ref_color      = "#a78bfa" if is_sharp else "#94a3b8"
+
                 st.markdown(f"""
 <div style="background:{card_bg};border:2px solid {border};border-radius:12px;padding:16px 20px;margin-bottom:14px">
   <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
     <div>
-      <div style="font-size:11px;color:#94a3b8;margin-bottom:2px">{sig["Матч"]} &middot; {sig["Время"]}</div>
+      <div style="font-size:11px;color:#94a3b8;margin-bottom:2px">{sig["Матч"]} &middot; {sig["Время"]}{sharp_badge}</div>
       <div style="font-size:20px;font-weight:800;color:{text_clr}">{signal_str} — СТАВИТЬ: {sig["На кого ставить"]}</div>
     </div>
     <div style="text-align:right">
@@ -1126,7 +1171,7 @@ with tab_signals:
     </div>
     <div style="background:#1e293b;border-radius:8px;padding:8px 12px">
       <div style="font-size:10px;color:#64748b">💰 EV Edge</div>
-      <div style="font-size:14px;font-weight:700;color:{'#4ade80' if edge_val>0 else '#f87171'}">{sig["EV Edge %"]}</div>
+      <div style="font-size:14px;font-weight:700;color:{ev_color}">{sig["EV Edge %"]}</div>
     </div>
     <div style="background:#1e293b;border-radius:8px;padding:8px 12px">
       <div style="font-size:10px;color:#64748b">📉 No-Vig Fair</div>
@@ -1136,6 +1181,14 @@ with tab_signals:
       <div style="font-size:10px;color:#64748b">🤝 Консенсус</div>
       <div style="font-size:14px;font-weight:700;color:#e2e8f0">{sig["Консенсус книг"]}</div>
     </div>
+    <div style="background:{kelly_cell_bg};{kelly_cell_brd}border-radius:8px;padding:8px 12px">
+      <div style="font-size:10px;color:#64748b">📈 Kelly ¼ Ставка</div>
+      <div style="font-size:14px;font-weight:700;color:{kelly_color}">${kelly_dollar:.2f} <span style="font-size:11px;color:#64748b">({kelly_pct_str})</span></div>
+    </div>
+    <div style="background:#1e293b;border-radius:8px;padding:8px 12px">
+      <div style="font-size:10px;color:#64748b">📊 Референс</div>
+      <div style="font-size:14px;font-weight:700;color:{ref_color}">{sig.get("Sharp Reference", "Консенсус")}</div>
+    </div>
   </div>
   <div style="margin-top:10px">
     <div style="font-size:10px;color:#64748b;margin-bottom:4px">Уверенность сигнала: {conf}/100</div>
@@ -1143,29 +1196,212 @@ with tab_signals:
       <div style="background:{border};height:8px;width:{conf}%;border-radius:4px;transition:width .4s"></div>
     </div>
   </div>
-  {'<div style="font-size:11px;color:#64748b;margin-top:8px">🔄 ' + str(sig['Другие исходы']) + '</div>' if sig['Другие исходы'] else ''}
+  {'<div style="font-size:11px;color:#64748b;margin-top:8px">🔄 ' + str(sig["Другие исходы"]) + '</div>' if sig["Другие исходы"] else ''}
 </div>""", unsafe_allow_html=True)
 
-            # Summary bar chart: confidence by match
-            _conf_col = "_conf" if "_conf" in sdf.columns else "Уверенность"
-            _conf_vals = sdf[_conf_col].tolist()
+            # Bar chart
+            _conf_vals = sdf["_conf"].tolist()
+            _is_sharp  = [str(s).startswith("⚡") for s in sdf.get("Sharp Reference", [""] * len(sdf))]
+            bar_colors = [
+                "#a78bfa" if sharp else
+                "#4ade80" if c >= 70 else
+                "#fde68a" if c >= 40 else
+                "#93c5fd" if c > 0 else "#475569"
+                for c, sharp in zip(_conf_vals, _is_sharp)
+            ]
             fig_sig = go.Figure(go.Bar(
                 x=sdf["На кого ставить"] + " (" + sdf["Матч"] + ")",
                 y=_conf_vals,
-                marker_color=[
-                    "#4ade80" if c >= 70 else "#fde68a" if c >= 40 else "#93c5fd" if c > 0 else "#475569"
-                    for c in _conf_vals
-                ],
-                text=[f"{e}" for e in sdf["EV Edge %"]],
+                marker_color=bar_colors,
+                text=sdf["EV Edge %"].tolist(),
                 textposition="outside",
             ))
             fig_sig.update_layout(
-                title="Уверенность сигнала (по бест исходу каждого матча)",
+                title="Уверенность сигнала v2 (фиолетовый = Sharp Pinnacle EV)",
                 xaxis_title="Исход", yaxis_title="Уверенность (0–100)",
-                yaxis_range=[0, 110],
+                yaxis_range=[0, 115],
                 height=380, **DARK,
             )
             st.plotly_chart(fig_sig, use_container_width=True)
+
+# ── TAB 1: ARBITRAGE (Surebet Finder) ────────────────────────────────────
+with tab_arb:
+    st.markdown("#### ⚡ Арбитраж — автопоиск суребетов по всем матчам")
+    if market_key != "h2h":
+        st.info("ℹ️ Арбитражный поиск работает только для рынка **H2H / 1X2**.")
+    else:
+        # ── Параметры ─────────────────────────────────────────────────────
+        arb_col1, arb_col2 = st.columns([2, 1])
+        with arb_col1:
+            arb_bankroll = st.number_input(
+                "💰 Банкролл для арбитража ($)",
+                min_value=10.0, max_value=1_000_000.0,
+                value=float(st.session_state.get("bankroll", 1000.0)),
+                step=100.0, format="%.0f",
+                key="arb_bankroll_input",
+                help="Сумма, которую распределим между букмекерами для гарантированной прибыли",
+            )
+        with arb_col2:
+            st.markdown(
+                "<div style='background:#1e293b;border-radius:8px;padding:12px;margin-top:24px'>"
+                "<div style='font-size:11px;color:#64748b'>Формула Arb%</div>"
+                "<div style='font-size:13px;color:#e2e8f0'>1 − Σ(1/D<sub>i</sub>)</div>"
+                "<div style='font-size:11px;color:#94a3b8;margin-top:4px'>Если > 0 — гарантированная прибыль</div>"
+                "</div>",
+                unsafe_allow_html=True,
+            )
+
+        # ── Поиск арбитражей по всем матчам ──────────────────────────────
+        arb_results = []
+        for match_name, grp in df.groupby("Матч"):
+            result = find_arb_in_group(grp, has_draw)
+            if result is not None:
+                arb_results.append({
+                    "match":      match_name,
+                    "time":       grp["Время"].iloc[0],
+                    "arb_pct":    result["arb_pct"],
+                    "outcomes":   result["outcomes"],
+                })
+
+        if not arb_results:
+            st.warning(
+                "🔍 Суребеты не найдены среди загруженных матчей. "
+                "**Совет:** добавь больше букмекеров (кнопка ✔️ Все в сайдбаре) "
+                "— арбитраж возникает когда разные книги сильно расходятся в оценках."
+            )
+            # Показываем ближайшие к арбитражу матчи
+            near_arb = []
+            for match_name, grp in df.groupby("Матч"):
+                best = {}
+                for _, row in grp.iterrows():
+                    try:
+                        h_am = row.get("Odds Хозяева (Am)")
+                        a_am = row.get("Odds Гости (Am)")
+                        if h_am is None or a_am is None: continue
+                        home = row["Хозяева"]; away = row["Гости"]
+                        for name, am in [(home, float(h_am)), (away, float(a_am))]:
+                            dec = american_to_decimal(am)
+                            if name not in best or dec > best[name][0]:
+                                best[name] = (dec, row["Букмекер"])
+                        if has_draw:
+                            d_am = row.get("Odds Ничья (Am)")
+                            if d_am and str(d_am) != "nan":
+                                dec = american_to_decimal(float(d_am))
+                                if "Ничья" not in best or dec > best["Ничья"][0]:
+                                    best["Ничья"] = (dec, row["Букмекер"])
+                    except Exception: continue
+                if len(best) >= 2:
+                    dec_list = [v[0] for v in best.values()]
+                    ap = arb_percentage(dec_list)
+                    near_arb.append({"Матч": match_name, "Время": grp["Время"].iloc[0],
+                                     "Arb%": round(ap * 100, 3),
+                                     "До арбитража": f"{abs(round(ap * 100, 3))}% gap"})
+            if near_arb:
+                near_df = pd.DataFrame(near_arb).sort_values("Arb%", ascending=False).head(10)
+                st.markdown("##### Ближайшие к суребету матчи")
+                st.dataframe(near_df, use_container_width=True, hide_index=True)
+        else:
+            st.success(f"✅ Найдено **{len(arb_results)}** суребет(а) в текущих данных!")
+
+            for arb in arb_results:
+                profit_pct = arb["arb_pct"]
+                profit_usd = round(arb_bankroll * profit_pct / 100, 2)
+                outcomes   = arb["outcomes"]
+                dec_list   = [v["dec"] for v in outcomes.values()]
+                stakes     = arb_stakes(arb_bankroll, dec_list)
+                outcome_names = list(outcomes.keys())
+
+                st.markdown(f"""
+<div style="background:#0f2a1a;border:2px solid #22c55e;border-radius:12px;padding:16px 20px;margin-bottom:16px">
+  <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px">
+    <div>
+      <div style="font-size:11px;color:#94a3b8">{arb["time"]}</div>
+      <div style="font-size:18px;font-weight:800;color:#4ade80">⚡ {arb["match"]}</div>
+    </div>
+    <div style="text-align:right">
+      <div style="font-size:26px;font-weight:900;color:#22c55e">+{profit_pct:.3f}%</div>
+      <div style="font-size:14px;color:#4ade80">+${profit_usd:.2f} гарантировано</div>
+    </div>
+  </div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:8px">""", unsafe_allow_html=True)
+
+                for i, (name, info) in enumerate(outcomes.items()):
+                    stake_val = stakes[i] if i < len(stakes) else 0
+                    payout    = round(stake_val * info["dec"], 2)
+                    st.markdown(f"""
+    <div style="background:#1e293b;border-radius:8px;padding:10px 14px">
+      <div style="font-size:11px;color:#64748b;margin-bottom:2px">Исход: <b style="color:#e2e8f0">{name}</b></div>
+      <div style="font-size:16px;font-weight:700;color:#fde68a">{info["am"]}</div>
+      <div style="font-size:12px;color:#94a3b8">{info["dec"]:.3f} децимал</div>
+      <div style="font-size:11px;color:#64748b;margin-top:6px">Букмекер</div>
+      <div style="font-size:13px;font-weight:600;color:#93c5fd">{info["bm"]}</div>
+      <div style="font-size:11px;color:#64748b;margin-top:6px">Ставка</div>
+      <div style="font-size:15px;font-weight:700;color:#4ade80">${stake_val:.2f}</div>
+      <div style="font-size:11px;color:#64748b">Выплата: ${payout:.2f}</div>
+    </div>""", unsafe_allow_html=True)
+
+                st.markdown("  </div>\n</div>", unsafe_allow_html=True)
+
+            # ── Таблица всех суребетов ────────────────────────────────────
+            arb_rows = []
+            for arb in arb_results:
+                outcomes  = arb["outcomes"]
+                dec_list  = [v["dec"] for v in outcomes.values()]
+                stakes    = arb_stakes(arb_bankroll, dec_list)
+                for i, (name, info) in enumerate(outcomes.items()):
+                    arb_rows.append({
+                        "Матч":      arb["match"],
+                        "Время":     arb["time"],
+                        "Arb%":      f"+{arb['arb_pct']:.3f}%",
+                        "Исход":     name,
+                        "Букмекер":  info["bm"],
+                        "Odds (Am)": info["am"],
+                        "Odds (Dec)": round(info["dec"], 3),
+                        "Ставка $":  stakes[i] if i < len(stakes) else 0,
+                    })
+            if arb_rows:
+                arb_df = pd.DataFrame(arb_rows)
+                st.dataframe(arb_df, use_container_width=True, hide_index=True,
+                             height=min(500, 60 + len(arb_df) * 38))
+                st.download_button(
+                    "⬇️ CSV арбитражи",
+                    arb_df.to_csv(index=False).encode(),
+                    f"arbitrage_{sport_cfg['key']}_{__import__('datetime').datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                    mime="text/csv",
+                )
+
+            # ── Калькулятор для ручного ввода ─────────────────────────────
+            st.divider()
+            st.markdown("##### 🧮 Калькулятор арбитражных ставок")
+            st.caption("Введи коэффициенты вручную для любого матча")
+            calc_col1, calc_col2, calc_col3 = st.columns(3)
+            with calc_col1:
+                calc_d1 = st.number_input("Decimal Odds Исход 1", min_value=1.01, value=2.10, step=0.05, key="calc_d1")
+            with calc_col2:
+                calc_d2 = st.number_input("Decimal Odds Исход 2", min_value=1.01, value=2.05, step=0.05, key="calc_d2")
+            with calc_col3:
+                calc_d3_on = st.checkbox("Ничья / 3-й исход", value=False, key="calc_d3_on")
+                calc_d3 = st.number_input("Decimal Odds Ничья", min_value=1.01, value=3.50, step=0.05,
+                                           key="calc_d3", disabled=not calc_d3_on)
+
+            calc_bank = st.number_input("Банкролл для калькулятора ($)", min_value=10.0,
+                                         value=arb_bankroll, step=100.0, key="calc_bank")
+
+            calc_odds = [calc_d1, calc_d2] + ([calc_d3] if calc_d3_on else [])
+            calc_arb  = arb_percentage(calc_odds)
+            calc_stakes = arb_stakes(calc_bank, calc_odds) if calc_arb > 0 else []
+
+            if calc_arb > 0:
+                calc_profit = round(calc_bank * calc_arb, 2)
+                st.success(f"✅ СУРЕБЕТ! Arb% = +{calc_arb*100:.3f}% | Гарантированная прибыль: **${calc_profit:.2f}**")
+                for i, (d, s) in enumerate(zip(calc_odds, calc_stakes)):
+                    st.markdown(
+                        f"**Исход {i+1}** (Dec: {d:.3f}) → ставка **${s:.2f}** "
+                        f"→ выплата **${round(s*d,2):.2f}**"
+                    )
+            else:
+                margin = abs(calc_arb * 100)
+                st.info(f"ℹ️ Суребета нет. Margin букмекера: **{margin:.2f}%** (нужно перекрыть)")
 
 # ── TAB 1: TABLE ──────────────────────────────
 with tab_table:
