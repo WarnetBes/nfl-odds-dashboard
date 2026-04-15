@@ -1186,7 +1186,10 @@ with st.sidebar:
                                            "Implied %":"40%","No-Vig Fair %":"47%",
                                            "EV Edge %":"+17.50%"}]),
                                        sport_label)
-            st.success(msg) if ok else st.error(msg)
+            if ok:
+                st.success(msg)
+            else:
+                st.error(msg)
         else:
             st.warning("Заполни email и App Password")
 
