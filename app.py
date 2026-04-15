@@ -760,6 +760,9 @@ defaults = {
     "demo_mode": False, "last_sport": None, "last_market": None,
     "last_fetch_ts": 0, "auto_refresh": True,
     "gmail_sent_ids": set(),   # track already-alerted value bets
+    "saved_api_key": "",       # persisted API key
+    "selected_bm_state": [],   # persisted bookmaker selection
+    "sport_filter": "Все",    # sport category filter
 }
 for k, v in defaults.items():
     if k not in st.session_state:
@@ -773,19 +776,73 @@ with st.sidebar:
     st.divider()
 
     # ── Odds API ──────────────────────────────
-    api_key = st.text_input("🔑 The Odds API Key", type="password",
+    _typed_key = st.text_input("🔑 The Odds API Key", type="password",
+        value=st.session_state.saved_api_key,
         placeholder="Пусто = демо-режим",
         help="https://the-odds-api.com — 500 запросов/мес бесплатно")
+    # Persist key across reruns
+    if _typed_key:
+        st.session_state.saved_api_key = _typed_key
+    api_key = st.session_state.saved_api_key
+    if api_key:
+        st.caption("✅ API ключ сохранён")
 
-    sport_label  = st.selectbox("🏆 Вид спорта / Лига", list(SPORTS_CATALOGUE.keys()))
+    # ── Sport / League filter ─────────────────
+    SPORT_FILTER_OPTIONS = ["Все", "⚽ Только Football", "🏈 Только NFL", "🏀 Только NBA"]
+    sport_filter = st.radio(
+        "🎯 Фильтр спорта",
+        SPORT_FILTER_OPTIONS,
+        index=SPORT_FILTER_OPTIONS.index(st.session_state.sport_filter)
+              if st.session_state.sport_filter in SPORT_FILTER_OPTIONS else 0,
+        horizontal=True,
+    )
+    st.session_state.sport_filter = sport_filter
+
+    # Build visible sport list based on filter
+    ALL_SPORT_KEYS = list(SPORTS_CATALOGUE.keys())
+    if sport_filter == "⚽ Только Football":
+        _visible_sports = [k for k in ALL_SPORT_KEYS if k.startswith("⚽")]
+    elif sport_filter == "🏈 Только NFL":
+        _visible_sports = [k for k in ALL_SPORT_KEYS if k.startswith("🏈")]
+    elif sport_filter == "🏀 Только NBA":
+        _visible_sports = [k for k in ALL_SPORT_KEYS if k.startswith("🏀")]
+    else:
+        _visible_sports = ALL_SPORT_KEYS
+
+    sport_label  = st.selectbox("🏆 Вид спорта / Лига", _visible_sports)
     sport_cfg    = SPORTS_CATALOGUE[sport_label]
     has_draw     = sport_cfg["has_draw"]
     region_label = st.selectbox("📍 Регион", list(REGION_MAP.keys()))
     market_label = st.selectbox("📊 Рынок", sport_cfg["markets"])
     market_key   = MARKET_KEY_MAP[market_label]
 
-    default_bm = ["DraftKings","FanDuel","BetMGM"] if not has_draw else ["Bet365","Unibet","DraftKings"]
-    selected_bm = st.multiselect("🏦 Букмекеры", US_BM + EU_BM, default=default_bm)
+    # ── Bookmakers ────────────────────────────
+    ALL_BM = US_BM + EU_BM
+    st.markdown("🏦 **Букмекеры**")
+    _bm_cols = st.columns(3)
+    with _bm_cols[0]:
+        if st.button("✔️ Все", use_container_width=True, key="bm_all"):
+            st.session_state.selected_bm_state = list(ALL_BM)
+    with _bm_cols[1]:
+        if st.button("🇺🇸 US", use_container_width=True, key="bm_us"):
+            st.session_state.selected_bm_state = list(US_BM)
+    with _bm_cols[2]:
+        if st.button("🇪🇺 EU", use_container_width=True, key="bm_eu"):
+            st.session_state.selected_bm_state = list(EU_BM)
+
+    # Default on first load based on sport
+    if not st.session_state.selected_bm_state:
+        st.session_state.selected_bm_state = (
+            ["DraftKings","FanDuel","BetMGM"] if not has_draw
+            else ["Bet365","Unibet","DraftKings"]
+        )
+
+    selected_bm = st.multiselect(
+        "Выбери букмекеров", ALL_BM,
+        default=[b for b in st.session_state.selected_bm_state if b in ALL_BM],
+        key="bm_multiselect",
+    )
+    st.session_state.selected_bm_state = selected_bm
 
     st.divider()
 
