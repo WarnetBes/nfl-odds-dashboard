@@ -1531,8 +1531,8 @@ with tab_signals:
         if spread_signals:
             for ss in sorted(spread_signals, key=lambda x: -x["_ev"]):
                 ev_c = ss["_ev_c"]
-                card_c = T["strong_bg"] if ss["_ev"] > 0 else T["moderate_bg"] if ss["_ev"] > -0.01 else T["none_bg"]
-                brd_c  = ("#16a34a" if _is_light else "#4ade80") if ss["_ev"] > 0 else ("#ca8a04" if _is_light else "#fde68a") if ss["_ev"] > -0.01 else T["border"]
+                card_c = T['strong_bg'] if ss["_ev"] > 0 else T['moderate_bg'] if ss["_ev"] > -0.01 else T['none_bg']
+                brd_c  = ("#16a34a" if _is_light else "#4ade80") if ss["_ev"] > 0 else ("#ca8a04" if _is_light else "#fde68a") if ss["_ev"] > -0.01 else T['border']
                 st.markdown(f"""
 <div style="background:{card_c};border:2px solid {brd_c};border-radius:12px;padding:14px 18px;margin-bottom:10px">
   <div style="font-size:11px;color:{T['text2']}">{ss['Матч']} &middot; {ss['Время']}</div>
@@ -1622,8 +1622,8 @@ with tab_signals:
         if total_signals:
             for ts in sorted(total_signals, key=lambda x: -x["_ev"]):
                 ev_c  = ts["_ev_c"]
-                card_c = T["strong_bg"] if ts["_ev"] > 0 else T["none_bg"]
-                brd_c  = ("#16a34a" if _is_light else "#22c55e") if ts["_ev"] > 0 else T["border"]
+                card_c = T['strong_bg'] if ts["_ev"] > 0 else T['none_bg']
+                brd_c  = ("#16a34a" if _is_light else "#22c55e") if ts["_ev"] > 0 else T['border']
                 st.markdown(f"""
 <div style="background:{card_c};border:2px solid {brd_c};border-radius:12px;padding:14px 18px;margin-bottom:10px">
   <div style="font-size:11px;color:{T['text2']}">{ts['Матч']} &middot; {ts['Время']}</div>
@@ -1683,15 +1683,15 @@ with tab_signals:
                 is_sharp   = str(sig.get("Sharp Reference", "")).startswith("⚡")
 
                 if is_sharp:
-                    card_bg, border, text_clr = T["sharp_bg"],    "#a78bfa", "#7c3aed" if _is_light else "#a78bfa"
+                    card_bg, border, text_clr = T['sharp_bg'],    "#a78bfa", "#7c3aed" if _is_light else "#a78bfa"
                 elif conf >= 70:
-                    card_bg, border, text_clr = T["strong_bg"],   "#16a34a" if _is_light else "#4ade80", "#166534" if _is_light else "#4ade80"
+                    card_bg, border, text_clr = T['strong_bg'],   "#16a34a" if _is_light else "#4ade80", "#166534" if _is_light else "#4ade80"
                 elif conf >= 40:
-                    card_bg, border, text_clr = T["moderate_bg"], "#ca8a04" if _is_light else "#fde68a", "#78350f" if _is_light else "#fde68a"
+                    card_bg, border, text_clr = T['moderate_bg'], "#ca8a04" if _is_light else "#fde68a", "#78350f" if _is_light else "#fde68a"
                 elif edge_val > 0:
-                    card_bg, border, text_clr = T["weak_bg"],     "#3b82f6", "#1d4ed8" if _is_light else "#93c5fd"
+                    card_bg, border, text_clr = T['weak_bg'],     "#3b82f6", "#1d4ed8" if _is_light else "#93c5fd"
                 else:
-                    card_bg, border, text_clr = T["none_bg"],     T["border"], T["none_text"]
+                    card_bg, border, text_clr = T['none_bg'],     T['border'], T['none_text']
 
                 kelly_pct_str = str(sig.get("Kelly ¼ %", "0.00%"))
                 try:
@@ -1706,57 +1706,57 @@ with tab_signals:
                     'padding:2px 8px;font-size:11px;margin-left:8px">⚡ Sharp EV</span>'
                 ) if is_sharp else ""
 
-                kelly_cell_bg  = T["kelly_bg"]   if kelly_dollar > 0 else T["bg"]
-                kelly_cell_brd = T["kelly_brd"]  if kelly_dollar > 0 else ""
-                kelly_color    = T["kelly_text"] if kelly_dollar > 0 else T["muted"]
+                kelly_cell_bg  = T['kelly_bg']   if kelly_dollar > 0 else T['bg']
+                kelly_cell_brd = T['kelly_brd']  if kelly_dollar > 0 else ""
+                kelly_color    = T['kelly_text'] if kelly_dollar > 0 else T['muted']
                 ev_color       = ("#16a34a" if _is_light else "#4ade80") if edge_val > 0 else ("#dc2626" if _is_light else "#f87171")
-                ref_color      = "#7c3aed" if (is_sharp and _is_light) else ("#a78bfa" if is_sharp else T["text2"])
+                ref_color      = "#7c3aed" if (is_sharp and _is_light) else ("#a78bfa" if is_sharp else T['text2'])
 
                 st.markdown(f"""
 <div style="background:{card_bg};border:2px solid {border};border-radius:12px;padding:16px 20px;margin-bottom:14px">
   <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
     <div>
-      <div style="font-size:11px;color:{T["text2"]};margin-bottom:2px">{sig["Матч"]} &middot; {sig["Время"]}{sharp_badge}</div>
+      <div style="font-size:11px;color:{T['text2']};margin-bottom:2px">{sig["Матч"]} &middot; {sig["Время"]}{sharp_badge}</div>
       <div style="font-size:20px;font-weight:800;color:{text_clr}">{signal_str} — СТАВИТЬ: {sig["На кого ставить"]}</div>
     </div>
     <div style="text-align:right">
       <div style="font-size:22px;font-weight:900;color:{text_clr}">{sig["Odds (Am)"]}</div>
-      <div style="font-size:12px;color:{T["text2"]}">{sig["Odds (Dec)"]:.2f} децимал</div>
+      <div style="font-size:12px;color:{T['text2']}">{sig["Odds (Dec)"]:.2f} децимал</div>
     </div>
   </div>
   <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin-top:12px">
-    <div style="background:{T["bg2"]};border-radius:8px;padding:8px 12px">
-      <div style="font-size:10px;color:{T["muted"]}">🏦 Лучший букмекер</div>
-      <div style="font-size:14px;font-weight:700;color:{T["text"]}">{sig["Лучший букмекер"]}</div>
+    <div style="background:{T['bg2']};border-radius:8px;padding:8px 12px">
+      <div style="font-size:10px;color:{T['muted']}">🏦 Лучший букмекер</div>
+      <div style="font-size:14px;font-weight:700;color:{T['text']}">{sig["Лучший букмекер"]}</div>
     </div>
-    <div style="background:{T["bg2"]};border-radius:8px;padding:8px 12px">
-      <div style="font-size:10px;color:{T["muted"]}">💰 EV Edge</div>
+    <div style="background:{T['bg2']};border-radius:8px;padding:8px 12px">
+      <div style="font-size:10px;color:{T['muted']}">💰 EV Edge</div>
       <div style="font-size:14px;font-weight:700;color:{ev_color}">{sig["EV Edge %"]}</div>
     </div>
-    <div style="background:{T["bg2"]};border-radius:8px;padding:8px 12px">
-      <div style="font-size:10px;color:{T["muted"]}">📉 No-Vig Fair</div>
-      <div style="font-size:14px;font-weight:700;color:{T["text"]}">{sig["No-Vig Fair %"]}</div>
+    <div style="background:{T['bg2']};border-radius:8px;padding:8px 12px">
+      <div style="font-size:10px;color:{T['muted']}">📉 No-Vig Fair</div>
+      <div style="font-size:14px;font-weight:700;color:{T['text']}">{sig["No-Vig Fair %"]}</div>
     </div>
-    <div style="background:{T["bg2"]};border-radius:8px;padding:8px 12px">
-      <div style="font-size:10px;color:{T["muted"]}">🤝 Консенсус</div>
-      <div style="font-size:14px;font-weight:700;color:{T["text"]}">{sig["Консенсус книг"]}</div>
+    <div style="background:{T['bg2']};border-radius:8px;padding:8px 12px">
+      <div style="font-size:10px;color:{T['muted']}">🤝 Консенсус</div>
+      <div style="font-size:14px;font-weight:700;color:{T['text']}">{sig["Консенсус книг"]}</div>
     </div>
     <div style="background:{kelly_cell_bg};{kelly_cell_brd}border-radius:8px;padding:8px 12px">
-      <div style="font-size:10px;color:{T[\"muted\"]}">📈 Kelly ¼ Ставка</div>
-      <div style="font-size:14px;font-weight:700;color:{kelly_color}">${kelly_dollar:.2f} <span style="font-size:11px;color:{T["muted"]}">({kelly_pct_str})</span></div>
+      <div style="font-size:10px;color:{T['muted']}">📈 Kelly ¼ Ставка</div>
+      <div style="font-size:14px;font-weight:700;color:{kelly_color}">${kelly_dollar:.2f} <span style="font-size:11px;color:{T['muted']}">({kelly_pct_str})</span></div>
     </div>
-    <div style="background:{T["bg2"]};border-radius:8px;padding:8px 12px">
-      <div style="font-size:10px;color:{T["muted"]}">📊 Референс</div>
+    <div style="background:{T['bg2']};border-radius:8px;padding:8px 12px">
+      <div style="font-size:10px;color:{T['muted']}">📊 Референс</div>
       <div style="font-size:14px;font-weight:700;color:{ref_color}">{sig.get("Sharp Reference", "Консенсус")}</div>
     </div>
   </div>
   <div style="margin-top:10px">
-    <div style="font-size:10px;color:{T["muted"]};margin-bottom:4px">Уверенность сигнала: {conf}/100</div>
-    <div style="background:{T["bg_dark"]};border-radius:4px;height:8px;overflow:hidden">
+    <div style="font-size:10px;color:{T['muted']};margin-bottom:4px">Уверенность сигнала: {conf}/100</div>
+    <div style="background:{T['bg_dark']};border-radius:4px;height:8px;overflow:hidden">
       <div style="background:{border};height:8px;width:{conf}%;border-radius:4px;transition:width .4s"></div>
     </div>
   </div>
-  {'<div style="font-size:11px;color:' + T["muted"] + ';margin-top:8px">🔄 ' + str(sig["Другие исходы"]) + '</div>' if sig["Другие исходы"] else ''}
+  {'<div style="font-size:11px;color:' + T['muted'] + ';margin-top:8px">🔄 ' + str(sig["Другие исходы"]) + '</div>' if sig["Другие исходы"] else ''}
 </div>""", unsafe_allow_html=True)
 
             # Bar chart
