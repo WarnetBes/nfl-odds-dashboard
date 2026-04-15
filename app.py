@@ -49,7 +49,11 @@ st.set_page_config(
     page_title="Sports Odds Dashboard",
     page_icon="🏆",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="collapsed",   # на мобиле sidebar свёрнут по умолчанию
+    menu_items={
+        "Get help": "https://the-odds-api.com",
+        "About": "🏆 Sports Odds Dashboard — Value Bets & Arbitrage Scanner",
+    }
 )
 
 # ─────────────────────────────────────────────
@@ -101,42 +105,315 @@ EU_BM = ["Betfair","Unibet","Paddy Power","Bet365","Sky Bet","Ladbrokes","Coral"
 MSK = pytz.timezone("Europe/Moscow")
 
 # ─────────────────────────────────────────────
-#  CSS
+#  CSS — PREMIUM MOBILE-FIRST
 # ─────────────────────────────────────────────
 st.markdown("""
 <style>
-.main-title {
-    font-size:2.1rem; font-weight:800;
-    background:linear-gradient(135deg,#a78bfa,#38bdf8);
-    -webkit-background-clip:text; -webkit-text-fill-color:transparent;
+/* ── Google Fonts ───────────────────────────── */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');
+
+/* ── Global ─────────────────────────────────── */
+html, body, [class*="css"] {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
 }
+
+/* ── Viewport meta override for mobile ─────── */
+* { box-sizing: border-box; }
+
+/* ── Main container max-width for large screens */
+.block-container {
+    max-width: 1200px !important;
+    padding: 1rem 1rem 4rem !important;  /* bottom pad for mobile nav */
+}
+
+/* ── Sidebar ─────────────────────────────────── */
+[data-testid="stSidebar"] {
+    background: linear-gradient(180deg, #0d1b2a 0%, #0f2137 100%) !important;
+    border-right: 1px solid #1e3a5f !important;
+}
+[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] h2 {
+    color: #a78bfa; font-size: 1rem; font-weight: 700; letter-spacing: .5px;
+}
+
+/* ── Title gradient ───────────────────────────── */
+.main-title {
+    font-size: clamp(1.5rem, 5vw, 2.4rem);
+    font-weight: 900;
+    background: linear-gradient(135deg, #a78bfa 0%, #38bdf8 50%, #4ade80 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    line-height: 1.2;
+    letter-spacing: -.5px;
+}
+.subtitle {
+    font-size: clamp(.75rem, 2.5vw, .9rem);
+    color: #64748b;
+    margin-top: 2px;
+    letter-spacing: .3px;
+}
+
+/* ── Metric cards ────────────────────────────── */
+[data-testid="stMetric"] {
+    background: linear-gradient(135deg, #1e293b, #0f1f33);
+    border: 1px solid #1e3a5f;
+    border-radius: 14px;
+    padding: 12px 16px !important;
+    transition: border-color .2s, transform .1s;
+}
+[data-testid="stMetric"]:hover {
+    border-color: #a78bfa;
+    transform: translateY(-1px);
+}
+[data-testid="stMetricValue"] {
+    font-size: clamp(1.2rem, 4vw, 1.8rem) !important;
+    font-weight: 800 !important;
+    color: #e2e8f0 !important;
+}
+[data-testid="stMetricLabel"] {
+    font-size: .75rem !important;
+    color: #64748b !important;
+    text-transform: uppercase;
+    letter-spacing: .5px;
+}
+
+/* ── Tabs ────────────────────────────────────── */
+[data-testid="stTabs"] [data-baseweb="tab-list"] {
+    background: #0d1b2a;
+    border-radius: 14px;
+    padding: 4px;
+    gap: 2px;
+    border: 1px solid #1e3a5f;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    flex-wrap: nowrap;
+}
+[data-testid="stTabs"] [data-baseweb="tab-list"]::-webkit-scrollbar { display:none; }
+[data-testid="stTabs"] [role="tab"] {
+    background: transparent;
+    border-radius: 10px;
+    padding: 8px 14px;
+    font-size: clamp(.75rem, 2.2vw, .875rem);
+    font-weight: 600;
+    color: #64748b;
+    white-space: nowrap;
+    min-width: fit-content;
+    transition: all .2s;
+    border: none !important;
+}
+[data-testid="stTabs"] [role="tab"][aria-selected="true"] {
+    background: linear-gradient(135deg, #7c3aed, #2563eb) !important;
+    color: #fff !important;
+    box-shadow: 0 2px 12px rgba(124,58,237,.4);
+}
+[data-testid="stTabs"] [role="tab"]:hover:not([aria-selected="true"]) {
+    background: #1e293b;
+    color: #e2e8f0;
+}
+
+/* ── Buttons ─────────────────────────────────── */
+[data-testid="stButton"] > button {
+    border-radius: 12px !important;
+    font-weight: 600 !important;
+    font-size: .9rem !important;
+    transition: all .2s !important;
+    min-height: 44px !important;   /* touch target 44px */
+}
+[data-testid="stButton"] > button[kind="primary"] {
+    background: linear-gradient(135deg, #7c3aed, #2563eb) !important;
+    border: none !important;
+    box-shadow: 0 4px 16px rgba(124,58,237,.35) !important;
+}
+[data-testid="stButton"] > button[kind="primary"]:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 6px 20px rgba(124,58,237,.5) !important;
+}
+[data-testid="stButton"] > button[kind="secondary"] {
+    background: #1e293b !important;
+    border: 1px solid #334155 !important;
+    color: #e2e8f0 !important;
+}
+
+/* ── Inputs ──────────────────────────────────── */
+[data-testid="stTextInput"] > div > input,
+[data-testid="stNumberInput"] > div > input,
+[data-testid="stSelectbox"] > div > div {
+    border-radius: 10px !important;
+    border: 1px solid #334155 !important;
+    background: #0f1f33 !important;
+    color: #e2e8f0 !important;
+    font-size: .9rem !important;
+    min-height: 44px !important;
+}
+[data-testid="stSlider"] {
+    padding-top: 4px;
+}
+
+/* ── DataFrames ──────────────────────────────── */
+[data-testid="stDataFrame"] {
+    border-radius: 14px;
+    overflow: hidden;
+    border: 1px solid #1e3a5f;
+}
+[data-testid="stDataFrame"] table {
+    font-size: clamp(.75rem, 2vw, .875rem) !important;
+}
+
+/* ── Live dot animation ──────────────────────── */
 .live-dot {
-    display:inline-block; width:10px; height:10px;
-    border-radius:50%; background:#22c55e;
-    box-shadow:0 0 6px #22c55e;
-    animation: pulse 1.2s infinite;
-    margin-right:6px; vertical-align:middle;
+    display: inline-block; width: 9px; height: 9px;
+    border-radius: 50%; background: #22c55e;
+    box-shadow: 0 0 8px #22c55e;
+    animation: pulse 1.4s infinite;
+    margin-right: 6px; vertical-align: middle;
 }
 @keyframes pulse {
-    0%,100%{opacity:1;transform:scale(1)}
-    50%{opacity:.5;transform:scale(1.3)}
+    0%,100%{ opacity:1; transform:scale(1); }
+    50%{ opacity:.4; transform:scale(1.4); }
 }
+
+/* ── Score cards ─────────────────────────────── */
 .score-card {
-    background:linear-gradient(135deg,#1e3a5f,#0d1b2a);
-    border:1px solid #334155; border-radius:12px;
-    padding:14px 18px; margin-bottom:10px;
+    background: linear-gradient(135deg, #1e3a5f 0%, #0d1b2a 100%);
+    border: 1px solid #334155;
+    border-radius: 16px;
+    padding: 16px 20px;
+    margin-bottom: 12px;
+    transition: border-color .2s, transform .15s;
 }
-.score-live  { border-color:#22c55e !important; }
-.score-final { border-color:#64748b !important; opacity:.85; }
-.score-pre   { border-color:#3b82f6 !important; }
-.team-name   { font-size:1rem; font-weight:600; color:#e2e8f0; }
-.team-score  { font-size:1.6rem; font-weight:800; color:#00b4d8; }
-.status-live { color:#22c55e; font-size:.82rem; font-weight:700; }
-.status-fin  { color:#94a3b8; font-size:.82rem; }
-.status-pre  { color:#60a5fa; font-size:.82rem; }
-.timer-bar   { background:#1e293b; border-radius:8px; padding:8px 14px; font-size:.85rem; color:#94a3b8; }
-.value-high  { color:#4ade80; font-weight:800; }
-div[data-testid="stDataFrame"] { border-radius:10px; overflow:hidden; }
+.score-card:hover { transform: translateY(-2px); border-color: #475569; }
+.score-live  { border-color: #22c55e !important; box-shadow: 0 0 16px rgba(34,197,94,.12); }
+.score-final { border-color: #475569 !important; opacity: .85; }
+.score-pre   { border-color: #3b82f6 !important; }
+.team-name   { font-size: clamp(.85rem,2.5vw,1rem); font-weight: 700; color: #e2e8f0; }
+.team-score  { font-size: clamp(1.3rem,4vw,1.8rem); font-weight: 900; color: #00b4d8; font-variant-numeric: tabular-nums; }
+.status-live { color: #22c55e; font-size: .78rem; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; }
+.status-fin  { color: #64748b; font-size: .78rem; }
+.status-pre  { color: #60a5fa; font-size: .78rem; }
+
+/* ── Timer bar ───────────────────────────────── */
+.timer-bar {
+    background: #1e293b;
+    border-radius: 10px;
+    padding: 8px 14px;
+    font-size: .82rem;
+    color: #94a3b8;
+    border: 1px solid #334155;
+}
+
+/* ── Bet signal cards ────────────────────────── */
+.bet-card {
+    border-radius: 16px;
+    padding: 18px 20px;
+    margin-bottom: 14px;
+    transition: transform .15s;
+}
+.bet-card:hover { transform: translateY(-2px); }
+
+/* ── Value badge ─────────────────────────────── */
+.value-badge {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 20px;
+    font-size: .75rem;
+    font-weight: 700;
+    background: linear-gradient(135deg,#065f46,#047857);
+    color: #4ade80;
+}
+
+/* ── Mobile ─────────────────────────────────── */
+@media (max-width: 768px) {
+    .block-container { padding: .75rem .75rem 3.5rem !important; }
+
+    /* Metric cards: wrap nicely in a 2-col grid */
+    [data-testid="stMetricValue"] { font-size: 1.25rem !important; }
+    [data-testid="stMetricLabel"] { font-size: .7rem !important; }
+    [data-testid="stMetric"] { padding: 10px 12px !important; }
+
+    /* Allow columns to wrap — 2-per-row on phone */
+    [data-testid="column"] {
+        min-width: calc(50% - 8px) !important;
+        flex: 1 1 calc(50% - 8px) !important;
+    }
+
+    /* Larger touch targets for buttons */
+    [data-testid="stButton"] > button {
+        min-height: 48px !important;
+        font-size: .9rem !important;
+        border-radius: 14px !important;
+    }
+
+    /* Scrollable tabs, smaller font */
+    [data-testid="stTabs"] [data-baseweb="tab-list"] {
+        padding: 3px;
+        border-radius: 12px;
+        gap: 1px;
+    }
+    [data-testid="stTabs"] [role="tab"] {
+        padding: 6px 10px;
+        font-size: .76rem;
+    }
+
+    /* Dataframe horizontal scroll */
+    [data-testid="stDataFrame"] {
+        overflow-x: auto !important;
+        -webkit-overflow-scrolling: touch;
+    }
+
+    /* Inputs full-width */
+    [data-testid="stTextInput"],
+    [data-testid="stNumberInput"],
+    [data-testid="stSelectbox"] { width: 100% !important; }
+
+    /* Score cards compact */
+    .score-card { padding: 12px 14px; }
+    .team-name  { font-size: .85rem; }
+    .team-score { font-size: 1.3rem; }
+
+    /* Bet cards compact */
+    .bet-card { padding: 14px 16px; }
+
+    /* Header compact */
+    .main-title { letter-spacing: -.3px; }
+}
+
+/* ── Very small screens (≤ 480px) ───────────── */
+@media (max-width: 480px) {
+    [data-testid="stTabs"] [role="tab"] {
+        padding: 5px 8px;
+        font-size: .72rem;
+    }
+    [data-testid="stMetricValue"] { font-size: 1.1rem !important; }
+    .block-container { padding: .5rem .5rem 3rem !important; }
+}
+
+/* ── Expander ────────────────────────────────── */
+[data-testid="stExpander"] {
+    border-radius: 12px !important;
+    border: 1px solid #1e3a5f !important;
+    background: #0d1b2a !important;
+}
+
+/* ── Alerts / info boxes ─────────────────────── */
+[data-testid="stAlert"] {
+    border-radius: 12px !important;
+}
+
+/* ── Divider ─────────────────────────────────── */
+hr { border-color: #1e3a5f !important; margin: 1rem 0 !important; }
+
+/* ── Scrollbar (desktop) ─────────────────────── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: #0d1b2a; }
+::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #475569; }
+
+/* ── Progress bar (auto-refresh) ────────────── */
+[data-testid="stProgress"] > div > div {
+    background: linear-gradient(90deg, #7c3aed, #38bdf8) !important;
+    border-radius: 4px !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -756,8 +1033,11 @@ with st.sidebar:
 # ─────────────────────────────────────────────
 #  HEADER
 # ─────────────────────────────────────────────
-st.markdown('<div class="main-title">🏆 Sports Odds Dashboard</div>', unsafe_allow_html=True)
-st.caption("NFL · Football · NBA — Коэффициенты · Live Scores · Value Bets · Gmail Alerts")
+st.markdown(
+    '<div class="main-title">🏆 Sports Odds Dashboard</div>'
+    '<div class="subtitle">NFL · Football · NBA &nbsp;·&nbsp; Live Odds &nbsp;·&nbsp; Value Bets &nbsp;·&nbsp; Arbitrage &nbsp;·&nbsp; Live Scores</div>',
+    unsafe_allow_html=True
+)
 
 # Auto-refresh countdown bar
 now_ts = time.time()
@@ -772,12 +1052,21 @@ if st.session_state.auto_refresh and st.session_state.events is not None:
         st.markdown(f'<div class="timer-bar">🕐 Обновлено: {datetime.now(MSK).strftime("%H:%M:%S МСК")}</div>',
                     unsafe_allow_html=True)
 
+# ── Mobile quick-load bar (visible on phone without opening sidebar) ──
+_mob_col1, _mob_col2, _mob_col3 = st.columns([3, 2, 1])
+with _mob_col1:
+    st.caption(f"🏆 **{sport_label}** · {market_label}")
+with _mob_col2:
+    st.caption(f"📍 {region_label} · 🏦 {len(selected_bm) if selected_bm else 'все'} букмекеров")
+with _mob_col3:
+    mobile_fetch_btn = st.button("⚡", help="Загрузить коэффициенты", use_container_width=True, key="mob_fetch")
+
 st.divider()
 
 # ─────────────────────────────────────────────
 #  AUTO-REFRESH TRIGGER
 # ─────────────────────────────────────────────
-should_fetch = fetch_btn
+should_fetch = fetch_btn or mobile_fetch_btn
 if (st.session_state.auto_refresh
         and st.session_state.events is not None
         and elapsed >= AUTO_REFRESH):
