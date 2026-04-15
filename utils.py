@@ -246,3 +246,100 @@ def make_h2h_row(match, home, away, bm, h_am, a_am,
         "Odds Гости (Am)":    a_am,
         "Odds Ничья (Am)":    d_am,
     }
+
+
+# ─────────────────────────────────────────────
+#  ESPN LIVE SCORES — чистые функции
+# ─────────────────────────────────────────────
+
+def parse_espn_event(event: dict, period_name: str = "Q") -> dict:
+    """
+    Парсит одно ESPN-событие в плоский словарь.
+    Возвращает:
+      state       : "pre" | "in" | "post"
+      detail      : строка статуса от ESPN (напр. "Final", "2nd Quarter")
+      clock       : displayClock ("14:23")
+      period      : номер периода (int)
+      home_name   : displayName хозяев
+      away_name   : displayName гостей
+      home_score  : счёт хозяев (str или "—")
+      away_score  : счёт гостей (str или "—")
+      home_abbr   : аббревиатура хозяев
+      away_abbr   : аббревиатура гостей
+      venue       : название арены
+      city        : город арены
+      note        : playoff note (headline)
+      status_str  : итоговая строка статуса для UI
+      period_name : переданный period_name (Q / min)
+    """
+    comp = event.get("competitions", [{}])[0]
+    status = comp.get("status", event.get("status", {}))
+    st_type = status.get("type", {})
+    state   = st_type.get("state", "pre")
+    detail  = st_type.get("detail", "")
+    clock   = status.get("displayClock", "")
+    period  = status.get("period", 0)
+
+    competitors = comp.get("competitors", [])
+    home = next((c for c in competitors if c.get("homeAway") == "home"), {})
+    away = next((c for c in competitors if c.get("homeAway") == "away"), {})
+
+    home_name  = home.get("team", {}).get("displayName", "—")
+    away_name  = away.get("team", {}).get("displayName", "—")
+    home_score = home.get("score", "—")
+    away_score = away.get("score", "—")
+    home_abbr  = home.get("team", {}).get("abbreviation", "")
+    away_abbr  = away.get("team", {}).get("abbreviation", "")
+
+    venue = comp.get("venue", {}).get("fullName", "")
+    city  = comp.get("venue", {}).get("address", {}).get("city", "")
+
+    notes    = comp.get("notes", [])
+    note_str = notes[0].get("headline", "") if notes else ""
+
+    # Строка статуса
+    if state == "in":
+        if period_name == "min":
+            status_str = f"{clock}'"
+        else:
+            status_str = f"{period_name}{period} · {clock}"
+    elif state == "post":
+        status_str = f"🏁 {detail}"
+    else:
+        status_str = f"📅 {detail}"
+
+    return {
+        "state":       state,
+        "detail":      detail,
+        "clock":       clock,
+        "period":      period,
+        "home_name":   home_name,
+        "away_name":   away_name,
+        "home_score":  home_score,
+        "away_score":  away_score,
+        "home_abbr":   home_abbr,
+        "away_abbr":   away_abbr,
+        "venue":       venue,
+        "city":        city,
+        "note":        note_str,
+        "status_str":  status_str,
+        "period_name": period_name,
+    }
+
+
+def fetch_scores_from_url(url: str, session=None) -> list:
+    """
+    Загружает список событий из ESPN scoreboard API.
+    session — объект с методом .get() (requests.Session или mock).
+    Если session=None, используется requests напрямую.
+    Возвращает список event-словарей (может быть пустым).
+    """
+    import requests as _requests
+    _session = session if session is not None else _requests
+    try:
+        r = _session.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+        if r.status_code == 200:
+            return r.json().get("events", [])
+    except Exception:
+        pass
+    return []
