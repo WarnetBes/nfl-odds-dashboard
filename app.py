@@ -840,6 +840,267 @@ def read_history_from_sheets(spreadsheet_url: str, sheet_name: str = "ValueBets"
 
 
 # ─────────────────────────────────────────────
+#  HELPERS — PDF EXPORT
+# ─────────────────────────────────────────────
+
+def generate_pdf_report(
+    vdf: pd.DataFrame,
+    sport_label: str,
+    bankroll: float = 1000.0,
+) -> bytes:
+    """
+    Генерирует PDF-отчёт с:
+      - Логотипом / заголовком
+      - Сводными метриками (кол-во ставок, avg EV, макс EV)
+      - Таблицей value bets
+      - Горизонтальной bar-диаграммой EV Edge %
+    Возвращает bytes PDF-файла.
+    """
+    import io
+    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.lib import colors
+    from reportlab.lib.units import mm
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.platypus import (
+        SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
+        HRFlowable, KeepTogether,
+    )
+    from reportlab.graphics.shapes import Drawing, Rect, String, Line
+    from reportlab.graphics.charts.barcharts import HorizontalBarChart
+    from reportlab.graphics import renderPDF
+    from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf,
+        pagesize=landscape(A4),
+        leftMargin=15*mm, rightMargin=15*mm,
+        topMargin=15*mm, bottomMargin=15*mm,
+        title=f"Value Bets Report — {sport_label}",
+        author="Sports Odds Dashboard",
+    )
+
+    # ── Palette ────────────────────────────────────────
+    C_BG     = colors.HexColor("#0d1b2a")
+    C_ACCENT = colors.HexColor("#00b4d8")
+    C_GREEN  = colors.HexColor("#4ade80")
+    C_AMBER  = colors.HexColor("#fbbf24")
+    C_TEXT   = colors.HexColor("#e2e8f0")
+    C_MUTED  = colors.HexColor("#94a3b8")
+    C_ROW1   = colors.HexColor("#1e293b")
+    C_ROW2   = colors.HexColor("#0f172a")
+    C_HEAD   = colors.HexColor("#0077b6")
+
+    styles   = getSampleStyleSheet()
+    style_h1 = ParagraphStyle(
+        "H1", parent=styles["Normal"],
+        fontSize=22, textColor=C_ACCENT,
+        fontName="Helvetica-Bold", alignment=TA_LEFT,
+        spaceAfter=2*mm,
+    )
+    style_h2 = ParagraphStyle(
+        "H2", parent=styles["Normal"],
+        fontSize=13, textColor=C_TEXT,
+        fontName="Helvetica-Bold", alignment=TA_LEFT,
+        spaceBefore=4*mm, spaceAfter=2*mm,
+    )
+    style_sub = ParagraphStyle(
+        "Sub", parent=styles["Normal"],
+        fontSize=9, textColor=C_MUTED,
+        fontName="Helvetica", alignment=TA_LEFT,
+        spaceAfter=4*mm,
+    )
+    style_cell = ParagraphStyle(
+        "Cell", parent=styles["Normal"],
+        fontSize=7.5, textColor=C_TEXT,
+        fontName="Helvetica", alignment=TA_LEFT,
+        leading=10,
+    )
+    style_cell_green = ParagraphStyle(
+        "CellGreen", parent=style_cell,
+        textColor=C_GREEN, fontName="Helvetica-Bold",
+    )
+    style_cell_head = ParagraphStyle(
+        "CellHead", parent=style_cell,
+        textColor=colors.white, fontName="Helvetica-Bold",
+        alignment=TA_CENTER,
+    )
+
+    now_str = datetime.now(MSK).strftime("%d.%m.%Y %H:%M МСК")
+    story   = []
+
+    # ── Header block ────────────────────────────────────
+    story.append(Paragraph("🏆 Sports Odds Dashboard", style_h1))
+    story.append(Paragraph(
+        f"Value Bets Report · {sport_label} · {now_str} · Банкролл: ${bankroll:,.0f}",
+        style_sub,
+    ))
+    story.append(HRFlowable(width="100%", thickness=1, color=C_ACCENT, spaceAfter=4*mm))
+
+    # ── Summary metrics ─────────────────────────────────
+    def _parse_ev(s):
+        try:
+            return float(str(s).replace("+","").replace("%",""))
+        except Exception:
+            return 0.0
+
+    ev_vals  = vdf["EV Edge %"].apply(_parse_ev) if "EV Edge %" in vdf.columns else pd.Series(dtype=float)
+    cnt      = len(vdf)
+    avg_ev   = ev_vals.mean() if not ev_vals.empty else 0.0
+    max_ev   = ev_vals.max()  if not ev_vals.empty else 0.0
+    bk_cnt   = vdf["Букмекер"].nunique() if "Букмекер" in vdf.columns else 0
+
+    metrics_data = [
+        [Paragraph("Всего ставок", style_cell_head),
+         Paragraph("Ср. EV Edge",  style_cell_head),
+         Paragraph("Макс EV Edge", style_cell_head),
+         Paragraph("Букмекеров",   style_cell_head)],
+        [Paragraph(f"{cnt}",           style_h2),
+         Paragraph(f"+{avg_ev:.1f}%",  style_cell_green),
+         Paragraph(f"+{max_ev:.1f}%",  style_cell_green),
+         Paragraph(f"{bk_cnt}",        style_h2)],
+    ]
+    pw = doc.width
+    metrics_tbl = Table(metrics_data, colWidths=[pw/4]*4, rowHeights=[8*mm, 12*mm])
+    metrics_tbl.setStyle(TableStyle([
+        ("BACKGROUND",   (0,0), (-1,0),  C_HEAD),
+        ("BACKGROUND",   (0,1), (-1,1),  C_ROW1),
+        ("ALIGN",        (0,0), (-1,-1), "CENTER"),
+        ("VALIGN",       (0,0), (-1,-1), "MIDDLE"),
+        ("GRID",         (0,0), (-1,-1), 0.4, C_MUTED),
+        ("ROUNDEDCORNERS", [3]),
+    ]))
+    story.append(metrics_tbl)
+    story.append(Spacer(1, 5*mm))
+
+    # ── Value Bets Table ─────────────────────────────────
+    story.append(Paragraph("📋 Список Value Bets", style_h2))
+
+    # Колонки для таблицы
+    show_cols = ["Матч", "Время", "Букмекер", "Исход", "Odds (Am)",
+                 "Odds (Dec)", "Implied %", "No-Vig Fair %", "EV Edge %"]
+    # Добавляем Kelly если есть
+    kelly_col = next((c for c in vdf.columns if "Kelly Stake" in c), None)
+    if kelly_col:
+        show_cols.append(kelly_col)
+    show_cols = [c for c in show_cols if c in vdf.columns]
+
+    # Ширины колонок (суммарно = doc.width)
+    col_w_map = {
+        "Матч":        55*mm,
+        "Время":       22*mm,
+        "Букмекер":    28*mm,
+        "Исход":       32*mm,
+        "Odds (Am)":   18*mm,
+        "Odds (Dec)":  18*mm,
+        "Implied %":   18*mm,
+        "No-Vig Fair %": 22*mm,
+        "EV Edge %":   20*mm,
+    }
+    if kelly_col:
+        col_w_map[kelly_col] = 24*mm
+    col_widths = [col_w_map.get(c, 20*mm) for c in show_cols]
+
+    # Масштабируем чтобы влезло
+    total_w = sum(col_widths)
+    if total_w > pw:
+        scale = pw / total_w
+        col_widths = [w * scale for w in col_widths]
+
+    # Header row
+    tbl_data = [[Paragraph(c, style_cell_head) for c in show_cols]]
+
+    # Data rows
+    for i, (_, row) in enumerate(vdf.iterrows()):
+        tr = []
+        for c in show_cols:
+            val = str(row.get(c, ""))
+            if c == "EV Edge %":
+                tr.append(Paragraph(val, style_cell_green))
+            else:
+                tr.append(Paragraph(val, style_cell))
+        tbl_data.append(tr)
+
+    vbet_tbl = Table(tbl_data, colWidths=col_widths, repeatRows=1)
+    row_colors = [("BACKGROUND", (0, i+1), (-1, i+1),
+                   C_ROW1 if i % 2 == 0 else C_ROW2)
+                  for i in range(len(vdf))]
+    vbet_tbl.setStyle(TableStyle([
+        ("BACKGROUND",  (0,0), (-1,0),  C_HEAD),
+        ("TEXTCOLOR",   (0,0), (-1,0),  colors.white),
+        ("ALIGN",       (0,0), (-1,0),  "CENTER"),
+        ("VALIGN",      (0,0), (-1,-1), "MIDDLE"),
+        ("GRID",        (0,0), (-1,-1), 0.3, colors.HexColor("#334155")),
+        ("ROWBACKGROUNDS", (0,1), (-1,-1), [C_ROW1, C_ROW2]),
+        ("FONTSIZE",    (0,0), (-1,-1), 7.5),
+        ("TOPPADDING",  (0,0), (-1,-1), 3),
+        ("BOTTOMPADDING",(0,0),(-1,-1), 3),
+        ("LEFTPADDING", (0,0), (-1,-1), 4),
+    ] + row_colors))
+    story.append(vbet_tbl)
+    story.append(Spacer(1, 6*mm))
+
+    # ── EV Edge Bar Chart ────────────────────────────────
+    if not ev_vals.empty and cnt > 0:
+        story.append(Paragraph("📊 График EV Edge %", style_h2))
+
+        # Берём топ-15 по EV
+        chart_df = vdf.copy()
+        chart_df["_ev"] = ev_vals.values
+        chart_df = chart_df.nlargest(min(15, cnt), "_ev")
+
+        labels  = []
+        ev_data = []
+        for _, r in chart_df.iterrows():
+            match_short = str(r.get("Матч", ""))[:28]
+            bk_short    = str(r.get("Букмекер", ""))[:12]
+            outcome     = str(r.get("Исход", "")).replace("✅ ", "")
+            labels.append(f"{match_short} [{bk_short}] {outcome}")
+            ev_data.append(r["_ev"])
+
+        chart_h  = max(80, len(labels) * 14)
+        chart_w  = min(float(pw), 220*mm)
+        drawing  = Drawing(chart_w, chart_h + 20)
+
+        bc = HorizontalBarChart()
+        bc.x         = 5
+        bc.y         = 10
+        bc.height    = chart_h
+        bc.width     = chart_w - 10
+        bc.data      = [ev_data]
+        bc.bars[0].fillColor      = C_GREEN
+        bc.bars[0].strokeColor    = C_ACCENT
+        bc.bars[0].strokeWidth    = 0.4
+        bc.valueAxis.valueMin     = 0
+        bc.valueAxis.valueMax     = max(ev_data) * 1.15 if ev_data else 10
+        bc.valueAxis.labels.fontSize  = 7
+        bc.valueAxis.labels.fillColor = C_MUTED
+        bc.categoryAxis.labels.fontSize  = 6.5
+        bc.categoryAxis.labels.fillColor = C_TEXT
+        bc.categoryAxis.labels.dx        = -4
+        bc.categoryAxis.categoryNames    = labels
+        bc.categoryAxis.labels.boxAnchor = "e"
+        bc.categoryAxis.labels.textAnchor = "end"
+        bc.barSpacing = 1
+        bc.groupSpacing = 3
+        drawing.add(bc)
+        story.append(drawing)
+
+    # ── Footer ───────────────────────────────────────────
+    story.append(Spacer(1, 4*mm))
+    story.append(HRFlowable(width="100%", thickness=0.5, color=C_MUTED))
+    story.append(Paragraph(
+        "⚠️ Только в образовательных целях. Ставки сопряжены с риском потери средств. "
+        "Данные: The Odds API (the-odds-api.com)",
+        ParagraphStyle("footer", parent=styles["Normal"],
+                       fontSize=7, textColor=C_MUTED, alignment=TA_CENTER),
+    ))
+
+    doc.build(story)
+    return buf.getvalue()
+
+
+# ─────────────────────────────────────────────
 #  HELPERS — ESPN LIVE SCORES
 # ─────────────────────────────────────────────
 @st.cache_data(ttl=60, show_spinner=False)   # кешируем на 1 мин
@@ -1100,7 +1361,7 @@ with st.sidebar:
         st.caption("✅ API ключ сохранён в сессии")
 
     # ── Sport / League filter ─────────────────
-    SPORT_FILTER_OPTIONS = ["Все", "⚽ Только Football", "🏈 Только NFL", "🏀 Только NBA"]
+    SPORT_FILTER_OPTIONS = ["Все", "🌐 Все виды спорта", "⚽ Только Football", "🏈 Только NFL", "🏀 Только NBA"]
     sport_filter = st.radio(
         "🎯 Фильтр спорта",
         SPORT_FILTER_OPTIONS,
@@ -1121,9 +1382,29 @@ with st.sidebar:
     else:
         _visible_sports = ALL_SPORT_KEYS
 
-    sport_label  = st.selectbox("🏆 Вид спорта / Лига", _visible_sports)
+    # В режиме «Все виды спорта» selectbox отключён
+    _fetch_all_mode = (sport_filter == "🌐 Все виды спорта")
+    sport_label  = st.selectbox(
+        "🏆 Вид спорта / Лига", _visible_sports,
+        disabled=_fetch_all_mode,
+        help="В режиме «Все виды спорта» выбор лиги отключён" if _fetch_all_mode else None,
+    )
     sport_cfg    = SPORTS_CATALOGUE[sport_label]
     has_draw     = sport_cfg["has_draw"]
+
+    # Кнопка «Загрузить ВСЕ лиги» — только в режиме 🌐
+    fetch_all_btn = False
+    if _fetch_all_mode:
+        st.info(
+            "🌐 Загрузит **все 10 лиг** за один клик (~10 API запросов)",
+            icon="ℹ️",
+        )
+        fetch_all_btn = st.button(
+            "🔍 Загрузить ВСЕ лиги",
+            use_container_width=True,
+            type="primary",
+            key="fetch_all_btn",
+        )
     region_label = st.selectbox("📍 Регион", list(REGION_MAP.keys()))
     market_label = st.selectbox("📊 Рынок", sport_cfg["markets"])
     market_key   = MARKET_KEY_MAP[market_label]
@@ -1230,6 +1511,34 @@ with st.sidebar:
     )
     st.session_state["bankroll"] = bankroll
     fetch_btn = st.button("🔄 Загрузить коэффициенты", use_container_width=True, type="primary")
+
+    # ── PDF экспорт ──────────────────────────
+    st.divider()
+    st.markdown("**📄 Экспорт отчёта**")
+    _pdf_vdf = st.session_state.get("vdf_all_cached", pd.DataFrame())
+    _pdf_empty = _pdf_vdf.empty if hasattr(_pdf_vdf, 'empty') else True
+    if _pdf_empty:
+        st.caption("⚠️ Сначала загрузи коэффициенты — появятся value bets")
+    else:
+        _pdf_sport = st.session_state.get("sport_label_cached", "Спорт")
+        _pdf_broll = st.session_state.get("bankroll", 1000.0)
+        with st.spinner("📄 Генерируем PDF…"):
+            try:
+                _pdf_bytes = generate_pdf_report(_pdf_vdf, _pdf_sport, _pdf_broll)
+                _pdf_name  = (
+                    f"value_bets_{_pdf_sport.lower().replace(' ','_')}_"
+                    f"{datetime.now(MSK).strftime('%Y%m%d_%H%M')}.pdf"
+                )
+                st.download_button(
+                    label=f"📥 Скачать PDF ({len(_pdf_vdf)} ставок)",
+                    data=_pdf_bytes,
+                    file_name=_pdf_name,
+                    mime="application/pdf",
+                    use_container_width=True,
+                    key="pdf_download_btn",
+                )
+            except Exception as _pdf_err:
+                st.error(f"❌ PDF: {_pdf_err}")
 
     # ── Диагностика подключений ───────────────
     st.divider()
@@ -1403,6 +1712,9 @@ st.divider()
 # ─────────────────────────────────────────────
 #  AUTO-REFRESH TRIGGER
 # ─────────────────────────────────────────────
+# В обычном режиме _fetch_all_mode и fetch_all_btn могут быть не объявлены
+_fetch_all_mode = locals().get("_fetch_all_mode", False) or st.session_state.get("_fetch_all_mode", False)
+fetch_all_btn   = locals().get("fetch_all_btn", False)
 should_fetch = fetch_btn or mobile_fetch_btn
 if (st.session_state.auto_refresh
         and st.session_state.events is not None
@@ -1412,7 +1724,50 @@ if (st.session_state.auto_refresh
 # ─────────────────────────────────────────────
 #  FETCH ODDS
 # ─────────────────────────────────────────────
-if should_fetch:
+if fetch_all_btn:
+    # ── Режим «Все виды спорта» — загружаем все лиги последовательно ──────────
+    st.session_state.last_sport  = "🌐 Все виды спорта"
+    st.session_state.last_market = market_label
+    st.session_state.demo_mode   = False
+    _all_events   = []
+    _min_rem      = None
+    _total_used   = 0
+    _all_sport_names = list(SPORTS_CATALOGUE.keys())
+    _prog = st.progress(0, text="Загружаем лиги…")
+    for _si, _sl in enumerate(_all_sport_names):
+        _sc = SPORTS_CATALOGUE[_sl]
+        _mk = "h2h"  # для «Все» всегда H2H
+        _prog.progress(int((_si / len(_all_sport_names)) * 100),
+                       text=f"Загружаю {_sl} ({_si+1}/{len(_all_sport_names)})…")
+        if not api_key:
+            _evts = make_demo(_sc["key"], _sc["has_draw"])
+        else:
+            _evts, _rem, _used = fetch_odds(api_key, _sc["key"], REGION_MAP[region_label], _mk)
+            if _evts is None:
+                _evts = []
+            try:
+                if _min_rem is None or (str(_rem).isdigit() and int(_rem) < int(_min_rem)):
+                    _min_rem = _rem
+                _total_used += int(_used) if str(_used).isdigit() else 0
+            except Exception:
+                pass
+        # Тегируем события тегом лиги для отображения
+        for _ev in (_evts or []):
+            _ev["_sport_label"] = _sl
+            _ev["_has_draw"]    = _sc["has_draw"]
+        _all_events.extend(_evts or [])
+    _prog.progress(100, text=f"✅ Загружено {len(_all_events)} матчей из {len(_all_sport_names)} лиг")
+    st.session_state.events       = _all_events
+    st.session_state.remaining    = _min_rem or ("demo" if not api_key else "?")
+    st.session_state.used         = str(_total_used) if _total_used else "demo"
+    if not api_key:
+        st.session_state.demo_mode = True
+    st.session_state["_fetch_all_active"] = True
+    st.session_state.last_fetch_ts = time.time()
+
+elif should_fetch:
+    st.session_state["_fetch_all_active"] = False
+    # ── Обычная загрузка одной лиги ───────────────────────────────────────────
     st.session_state.last_sport  = sport_label
     st.session_state.last_market = market_label
     if not api_key:
@@ -1504,7 +1859,24 @@ if not filtered_events:
     st.warning("⚠️ Нет матчей по выбранным фильтрам.")
     st.stop()
 
-df = parse_to_df(filtered_events, market_key, has_draw)
+# В режиме «Все лиги» парсим каждую лигу с её own has_draw
+if st.session_state.get("_fetch_all_active"):
+    _dfs = []
+    for _sl_name in SPORTS_CATALOGUE:
+        _sc_cfg = SPORTS_CATALOGUE[_sl_name]
+        _sl_evts = [e for e in filtered_events if e.get("_sport_label") == _sl_name]
+        if _sl_evts:
+            _sdf = parse_to_df(_sl_evts, "h2h", _sc_cfg["has_draw"])
+            if not _sdf.empty:
+                _sdf["_sport_label"] = _sl_name
+                _dfs.append(_sdf)
+    df = pd.concat(_dfs, ignore_index=True) if _dfs else pd.DataFrame()
+    # Для совместимости с остальным кодом — has_draw=False (смешанный режим)
+    has_draw = False
+    market_key = "h2h"
+else:
+    df = parse_to_df(filtered_events, market_key, has_draw)
+
 if df.empty:
     st.warning(f"⚠️ Нет данных для рынка «{market_label}».")
     st.stop()
@@ -1516,6 +1888,10 @@ cur_sport = st.session_state.last_sport or sport_label
 demo_tag  = " *(демо)*" if st.session_state.demo_mode else ""
 vdf_all   = _compute_value_bets_v2(df, has_draw, min_edge, sport_cfg["key"], bankroll) if market_key == "h2h" else pd.DataFrame()
 vbets_cnt = len(vdf_all)
+# Кешируем для PDF-экспорта из сайдбара
+if not vdf_all.empty:
+    st.session_state["vdf_all_cached"]     = vdf_all
+    st.session_state["sport_label_cached"] = sport_label
 
 c1, c2, c3, c4, c5 = st.columns(5)
 c1.metric("🏟 Матчей",      df["Матч"].nunique())
