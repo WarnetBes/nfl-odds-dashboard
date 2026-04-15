@@ -218,188 +218,10 @@ def parse_to_df(events, market_key, has_draw):
                 rows.append(row)
     return pd.DataFrame(rows)
 
-def build_betting_signals(df: pd.DataFrame, has_draw: bool) -> pd.DataFrame:
-    """
-    Для каждого матча агрегирует данные по всем букмекерам и выдаёт чёткий сигнал:
-    - Лучший исход (макс EV Edge)
-    - Консенсус букмекеров (доля книг с max EV > 0)
-    - Средняя no-vig вероятность
-    - Лучший коэфф (max decimal odds)
-    - Уровень уверенности сигнала
-    """
-    signals = []
-
-    for match, grp in df.groupby("Матч"):
-        home = grp["Хозяева"].iloc[0]
-        away = grp["Гости"].iloc[0]
-        time_str = grp["Время"].iloc[0]
-
-        # Сбор данных по всем букмекерам
-        outcome_data = {}  # name -> list of (dec, impl, fair, ev, bm_name)
-
-        for _, row in grp.iterrows():
-            h_am = row.get("Odds Хозяева (Am)")
-            a_am = row.get("Odds Гости (Am)")
-            if h_am is None or a_am is None or str(h_am)=="nan" or str(a_am)=="nan":
-                continue
-            try:
-                h_dec  = american_to_decimal(float(h_am))
-                a_dec  = american_to_decimal(float(a_am))
-                h_impl = decimal_to_implied(h_dec)
-                a_impl = decimal_to_implied(a_dec)
-                d_am   = row.get("Odds Ничья (Am)")
-                if has_draw and d_am and str(d_am) != "nan":
-                    d_dec  = american_to_decimal(float(d_am))
-                    d_impl = decimal_to_implied(d_dec)
-                    nv     = no_vig_prob([h_impl, a_impl, d_impl])
-                    pairs  = [(home, h_dec, h_impl, nv[0], fmt_am(h_am)),
-                              (away, a_dec, a_impl, nv[1], fmt_am(a_am)),
-                              ("Ничья", d_dec, d_impl, nv[2], fmt_am(d_am))]
-                else:
-                    nv    = no_vig_prob([h_impl, a_impl])
-                    pairs = [(home, h_dec, h_impl, nv[0], fmt_am(h_am)),
-                             (away, a_dec, a_impl, nv[1], fmt_am(a_am))]
-
-                for name, dec, impl, fair, am_str in pairs:
-                    edge = ev_edge(fair, dec) * 100
-                    if name not in outcome_data:
-                        outcome_data[name] = []
-                    outcome_data[name].append({
-                        "dec": dec, "impl": impl, "fair": fair,
-                        "edge": edge, "bm": row["Букмекер"], "am": am_str
-                    })
-            except Exception:
-                continue
-
-        if not outcome_data:
-            continue
-
-        total_bm_count = len(grp["Букмекер"].unique())
-
-        # Анализируем каждый исход
-        best_outcome = None
-        best_edge    = -999
-
-        outcome_stats = {}
-        for name, entries in outcome_data.items():
-            edges    = [e["edge"] for e in entries]
-            fairs    = [e["fair"] for e in entries]
-            decs     = [e["dec"]  for e in entries]
-            positive = [e for e in entries if e["edge"] > 0]
-            consensus_pct = round(len(positive) / total_bm_count * 100)
-
-            avg_edge  = round(sum(edges) / len(edges), 2)
-            max_edge  = round(max(edges), 2)
-            avg_fair  = round(sum(fairs) / len(fairs), 1)
-            best_dec  = max(decs)
-            best_bm   = next(e["bm"] for e in entries if e["dec"] == best_dec)
-            best_am   = next(e["am"] for e in entries if e["dec"] == best_dec)
-
-            # Уровень сигнала (0-100)
-            confidence = min(100, int(
-                (max(avg_edge, 0) * 4)      # +4 за каждый % EV
-                + (consensus_pct * 0.4)     # +консенсус
-                + (min(avg_fair - 33, 30))  # +за но-виг вероятность > 33%
-            ))
-
-            outcome_stats[name] = {
-                "avg_edge": avg_edge, "max_edge": max_edge,
-                "avg_fair": avg_fair, "best_dec": best_dec,
-                "best_bm": best_bm,  "best_am": best_am,
-                "consensus_pct": consensus_pct,
-                "confidence": confidence,
-                "books_count": len(entries),
-            }
-            if max_edge > best_edge:
-                best_edge    = max_edge
-                best_outcome = name
-
-        if best_outcome is None:
-            continue
-
-        bs = outcome_stats[best_outcome]
-
-        # Сигнал-эмодзи
-        if bs["confidence"] >= 70:
-            signal_emoji = "🟢"   # зелёный = сильный сигнал
-            signal_text  = "СИЛЬНЫЙ"
-        elif bs["confidence"] >= 40:
-            signal_emoji = "🟡"   # жёлтый = умеренный
-            signal_text  = "УМЕРЕННЫЙ"
-        elif bs["avg_edge"] > 0:
-            signal_emoji = "🔵"   # синий = слабый
-            signal_text  = "СЛАБЫЙ"
-        else:
-            signal_emoji = "⚪"   # серый = нет преимущества
-            signal_text  = "НЕТ"
-
-        # Альтернативные исходы
-        other_outcomes = [
-            f"{n}: EV {s['avg_edge']:+.1f}% / fair {s['avg_fair']:.0f}%"
-            for n, s in outcome_stats.items() if n != best_outcome
-        ]
-
-        signals.append({
-            "Матч":          match,
-            "Время":         time_str,
-            "Сигнал":        f"{signal_emoji} {signal_text}",
-            "На кого ставить": best_outcome,
-            "Лучший букмекер": bs["best_bm"],
-            "Odds (Am)":       bs["best_am"],
-            "Odds (Dec)":      bs["best_dec"],
-            "EV Edge %":       f"{bs['max_edge']:+.2f}%",
-            "No-Vig Fair %":   f"{bs['avg_fair']:.1f}%",
-            "Консенсус книг": f"{bs['consensus_pct']}%  ({bs['books_count']}/{total_bm_count})",
-            "Уверенность":    bs["confidence"],
-            "Другие исходы":  " | ".join(other_outcomes),
-            "_conf":           bs["confidence"],
-            "_edge":           bs["max_edge"],
-        })
-
-    if not signals:
-        return pd.DataFrame()
-    return pd.DataFrame(signals).sort_values(["_conf","_edge"], ascending=False).reset_index(drop=True)
+# [REMOVED: old inline def build_betting_signals(df: pd.DataFrame, has_dr]
 
 
-def compute_value_bets(df, has_draw, min_edge_pct):
-    rows = []
-    for _, r in df.iterrows():
-        h_am = r.get("Odds Хозяева (Am)")
-        a_am = r.get("Odds Гости (Am)")
-        if h_am is None or a_am is None or str(h_am)=="nan" or str(a_am)=="nan": continue
-        try:
-            h_dec  = american_to_decimal(float(h_am))
-            a_dec  = american_to_decimal(float(a_am))
-            h_impl = decimal_to_implied(h_dec)
-            a_impl = decimal_to_implied(a_dec)
-            d_am   = r.get("Odds Ничья (Am)")
-            if has_draw and d_am and str(d_am)!="nan":
-                d_dec  = american_to_decimal(float(d_am))
-                d_impl = decimal_to_implied(d_dec)
-                nv     = no_vig_prob([h_impl, a_impl, d_impl])
-                candidates = [(r["Хозяева"], h_dec, h_impl, nv[0], fmt_am(h_am)),
-                              (r["Гости"],   a_dec, a_impl, nv[1], fmt_am(a_am)),
-                              ("Ничья",      d_dec, d_impl, nv[2], fmt_am(d_am))]
-            else:
-                nv = no_vig_prob([h_impl, a_impl])
-                candidates = [(r["Хозяева"], h_dec, h_impl, nv[0], fmt_am(h_am)),
-                              (r["Гости"],   a_dec, a_impl, nv[1], fmt_am(a_am))]
-            for name, dec, impl, fair, am_str in candidates:
-                edge = ev_edge(fair, dec) * 100
-                if edge >= min_edge_pct:
-                    rows.append({
-                        "Матч": r["Матч"], "Время": r["Время"], "Букмекер": r["Букмекер"],
-                        "Исход": f"✅ {name}", "Odds (Am)": am_str, "Odds (Dec)": dec,
-                        "Implied %": f"{impl}%", "No-Vig Fair %": f"{fair}%",
-                        "EV Edge %": f"+{edge:.2f}%", "_edge": edge,
-                    })
-        except Exception:
-            continue
-    if rows:
-        vdf = pd.DataFrame(rows).sort_values("_edge", ascending=False).reset_index(drop=True)
-        vdf.index += 1
-        return vdf.drop(columns=["_edge"])
-    return pd.DataFrame()
+# [REMOVED: old inline def compute_value_bets(df, has_draw, min_edge_pct)]
 
 # ─────────────────────────────────────────────
 #  HELPERS — GMAIL
@@ -991,7 +813,7 @@ if should_fetch:
             _auto_filt = [e for e in _auto_filt if e["bookmakers"]]
             _auto_df = parse_to_df(_auto_filt, "h2h", has_draw)
             if not _auto_df.empty:
-                _auto_vdf = compute_value_bets(_auto_df, has_draw, min_edge)
+                _auto_vdf = _compute_value_bets_v2(_auto_df, has_draw, min_edge, sport_cfg["key"], bankroll)
                 if not _auto_vdf.empty:
                     _ok_gs, _msg_gs = log_value_bets_to_sheets(_auto_vdf, sport_label,
                                                                 _gs_auto_url)
@@ -1004,7 +826,7 @@ if should_fetch:
         filt = [e for e in filt if e["bookmakers"]]
         tmp_df = parse_to_df(filt, "h2h", has_draw)
         if not tmp_df.empty:
-            vdf_alert = compute_value_bets(tmp_df, has_draw, VALUE_THRESHOLD)
+            vdf_alert = _compute_value_bets_v2(tmp_df, has_draw, VALUE_THRESHOLD, sport_cfg["key"], bankroll)
             if not vdf_alert.empty:
                 alert_key = frozenset(vdf_alert["Матч"].tolist())
                 if alert_key not in st.session_state.gmail_sent_ids:
@@ -1081,7 +903,7 @@ st.divider()
 # ─────────────────────────────────────────────
 #  TABS
 # ─────────────────────────────────────────────
-tab_signals, tab_arb, tab_table, tab_chart, tab_value, tab_live, tab_history = st.tabs([
+tab_signals, tab_arb, tab_table, tab_chart, tab_value, tab_live, tab_history, tab_bankroll = st.tabs([
     "🎯 Сигналы",
     "⚡ Арбитраж",
     "📋 Коэффициенты",
@@ -1089,6 +911,7 @@ tab_signals, tab_arb, tab_table, tab_chart, tab_value, tab_live, tab_history = s
     "💎 Value Bets",
     "📺 Live Scores",
     "📊 История ставок",
+    "💰 Статистика банкролла",
 ])
 
 DARK = dict(plot_bgcolor="#0d1b2a", paper_bgcolor="#0d1b2a", font_color="#e2e8f0")
@@ -1251,6 +1074,38 @@ with tab_arb:
                 unsafe_allow_html=True,
             )
 
+        # ── Фильтр ликвидности ─────────────────────────────────────────────
+        st.markdown("**🔒 Фильтр ликвидности**")
+        liq_col1, liq_col2, liq_col3 = st.columns(3)
+        with liq_col1:
+            liq_enabled = st.checkbox(
+                "Скрывать суребеты выше лимита", value=True, key="liq_enabled",
+                help="Суребеты где ставка превышает лимит букмекера будут скрыты"
+            )
+        with liq_col2:
+            liq_limit = st.number_input(
+                "Лимит ставки ($)", min_value=10.0, max_value=50000.0,
+                value=500.0, step=50.0, key="liq_limit",
+                help="Типичный лимит: мягкие BK $200-$500, шарп $2000+"
+            )
+        with liq_col3:
+            liq_warn_pct = st.slider(
+                "Предупреждение при >% лимита", min_value=50, max_value=100, value=80,
+                key="liq_warn_pct",
+                help="Предупреждать если ставка > X% от лимита"
+            )
+        # Типичные лимиты по данным публичных источников
+        BM_LIMITS = {
+            "draftkings": 2000, "fanduel": 2000, "betmgm": 1500,
+            "caesars": 1500, "pointsbet": 1000, "bet365": 500,
+            "unibet": 500, "williamhill": 500, "betway": 300,
+            "pinnacle": 10000, "bookmaker": 5000, "betfair": 3000,
+            "circa": 50000, "matchbook": 2000,
+        }
+        def get_bm_limit(bm_name):
+            key = str(bm_name).lower().replace(" ", "").replace(".", "")
+            return float(BM_LIMITS.get(key, liq_limit))
+
         # ── Поиск арбитражей по всем матчам ──────────────────────────────
         arb_results = []
         for match_name, grp in df.groupby("Матч"):
@@ -1262,6 +1117,38 @@ with tab_arb:
                     "arb_pct":    result["arb_pct"],
                     "outcomes":   result["outcomes"],
                 })
+
+        # ── Применяем фильтр ликвидности ────────────────────────────────────
+        liq_hidden = []
+        liq_ok = []
+        for _arb in arb_results:
+            _outcomes = _arb["outcomes"]
+            _dec_list = [v["dec"] for v in _outcomes.values()]
+            _stakes   = arb_stakes(arb_bankroll, _dec_list)
+            _over   = False
+            _warns  = []
+            for _i, (_name, _info) in enumerate(_outcomes.items()):
+                _sv        = _stakes[_i] if _i < len(_stakes) else 0
+                _bm_lim    = get_bm_limit(_info["bm"])
+                _eff_lim   = min(liq_limit, _bm_lim)
+                if liq_enabled and _sv > _eff_lim:
+                    _over = True
+                elif _sv > _eff_lim * liq_warn_pct / 100:
+                    _warns.append(
+                        f"⚠️ {_info['bm']} ({_name}): "
+                        f"${_sv:.0f} = {_sv/_eff_lim*100:.0f}% от лимита ${_eff_lim:.0f}"
+                    )
+            if _over:
+                liq_hidden.append(_arb)
+            else:
+                liq_ok.append({**_arb, "_liq_warnings": _warns})
+        if liq_hidden:
+            with st.expander(f"🚫 Скрыто {len(liq_hidden)} суребетов — ставка превышает лимит"):
+                for _h in liq_hidden:
+                    _ds = arb_stakes(arb_bankroll, [v["dec"] for v in _h["outcomes"].values()])
+                    _ms = max(_ds) if _ds else 0
+                    st.markdown(f"- **{_h['match']}** — макс ставка ${_ms:.0f} > лимита ${liq_limit:.0f}")
+        arb_results = liq_ok
 
         if not arb_results:
             st.warning(
@@ -1310,9 +1197,16 @@ with tab_arb:
                 dec_list   = [v["dec"] for v in outcomes.values()]
                 stakes     = arb_stakes(arb_bankroll, dec_list)
                 outcome_names = list(outcomes.keys())
+                liq_warn_list = arb.get("_liq_warnings", [])
+                liq_warn_html = (
+                    '<div style="background:#2d1f00;border:1px solid #f59e0b;border-radius:6px;'
+                    'padding:6px 10px;margin-bottom:8px;font-size:11px;color:#fde68a">'
+                    + "<br>".join(liq_warn_list) + "</div>"
+                ) if liq_warn_list else ""
 
                 st.markdown(f"""
 <div style="background:#0f2a1a;border:2px solid #22c55e;border-radius:12px;padding:16px 20px;margin-bottom:16px">
+  {liq_warn_html}
   <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px">
     <div>
       <div style="font-size:11px;color:#94a3b8">{arb["time"]}</div>
