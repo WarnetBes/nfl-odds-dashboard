@@ -42,6 +42,17 @@ from utils import (
     SPORT_EV_THRESHOLDS,
 )
 
+# ── Импорт auth модуля ──────────────────────
+from auth import (
+    run_auth_gate,
+    render_user_badge,
+    is_tab_locked,
+    render_upgrade_banner,
+    get_available_sports,
+    apply_rows_limit,
+    render_rows_limit_banner,
+)
+
 # ─────────────────────────────────────────────
 #  PAGE CONFIG
 # ─────────────────────────────────────────────
@@ -55,6 +66,9 @@ st.set_page_config(
         "About": "🏆 Sports Odds Dashboard — Value Bets & Arbitrage Scanner",
     }
 )
+
+# ── AUTH GATE — проверка входа ────────────
+run_auth_gate()  # 🔒 Login required
 
 # ─────────────────────────────────────────────
 #  CONSTANTS
@@ -1330,6 +1344,7 @@ with st.sidebar:
 
     # ── Тема ────────────────────────────────
     _theme_cols = st.columns(2)
+        render_user_badge()  # 👤 User info + logout
     with _theme_cols[0]:
         _dark_btn  = st.button("🌑 Тёмная",  use_container_width=True,
                                type="primary" if st.session_state.theme=="dark"  else "secondary",
