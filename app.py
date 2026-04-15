@@ -14,13 +14,12 @@ import requests
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from datetime import datetime, timezone
+from datetime import datetime
 import pytz
 import time
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-import json
 
 try:
     import gspread
@@ -961,6 +960,21 @@ if should_fetch:
             st.session_state.used      = used
             st.session_state.demo_mode = False
     st.session_state.last_fetch_ts = time.time()
+    # Google Sheets auto-log on fresh data
+    if st.session_state.get("gsheets_on", False) and market_key == "h2h":
+        _gs_auto_url = st.session_state.get("gsheet_url", "")
+        if _gs_auto_url and st.session_state.events:
+            _auto_filt = [{**ev,"bookmakers":[b for b in ev.get("bookmakers",[]) if not selected_bm or b.get("title") in selected_bm]}
+                          for ev in st.session_state.events]
+            _auto_filt = [e for e in _auto_filt if e["bookmakers"]]
+            _auto_df = parse_to_df(_auto_filt, "h2h", has_draw)
+            if not _auto_df.empty:
+                _auto_vdf = compute_value_bets(_auto_df, has_draw, min_edge)
+                if not _auto_vdf.empty:
+                    _ok_gs, _msg_gs = log_value_bets_to_sheets(_auto_vdf, sport_label,
+                                                                _gs_auto_url)
+                    if _ok_gs:
+                        st.toast(f"📊 Google Sheets: записано {len(_auto_vdf)} value bets", icon="✅")
     # Gmail alert check on fresh data
     if gmail_on and gmail_from and gmail_pass and gmail_to and st.session_state.events:
         filt = [{**ev,"bookmakers":[b for b in ev.get("bookmakers",[]) if not selected_bm or b.get("title") in selected_bm]}
@@ -1080,8 +1094,8 @@ with tab_signals:
 
             # Cards for each match
             for _, sig in sdf.iterrows():
-                conf = int(sig["_conf"]) if "_conf" in sig else int(sig.get("Уверенность", 0))
-                edge_val = float(sig["_edge"]) if "_edge" in sig else 0.0
+                conf = int(sig["_conf"]) if "_conf" in sig.index else int(sig.get("Уверенность", 0))
+                edge_val = float(sig["_edge"]) if "_edge" in sig.index else 0.0
                 signal_str = str(sig["Сигнал"])
 
                 if conf >= 70:
@@ -1133,12 +1147,14 @@ with tab_signals:
 </div>""", unsafe_allow_html=True)
 
             # Summary bar chart: confidence by match
+            _conf_col = "_conf" if "_conf" in sdf.columns else "Уверенность"
+            _conf_vals = sdf[_conf_col].tolist()
             fig_sig = go.Figure(go.Bar(
                 x=sdf["На кого ставить"] + " (" + sdf["Матч"] + ")",
-                y=sdf["_conf" if "_conf" in sdf.columns else "Уверенность"],
+                y=_conf_vals,
                 marker_color=[
                     "#4ade80" if c >= 70 else "#fde68a" if c >= 40 else "#93c5fd" if c > 0 else "#475569"
-                    for c in sdf["_conf" if "_conf" in sdf.columns else "Уверенность"]
+                    for c in _conf_vals
                 ],
                 text=[f"{e}" for e in sdf["EV Edge %"]],
                 textposition="outside",
@@ -1274,8 +1290,8 @@ with tab_value:
         col_method, col_gmail = st.columns([3,2])
         with col_method:
             st.info(
-                f"**No-Vig EV формула:**\n"
-                f"1. Implied % → 2. No-Vig нормализация → 3. EV Edge = fair×dec−1\n"
+                "**No-Vig EV формула:**\n"
+                "1. Implied % → 2. No-Vig нормализация → 3. EV Edge = fair×dec−1\n"
                 + ("⚽ Трёхисходник (1/X/2) для Football." if has_draw else "🏈/🏀 Двухисходник.")
             )
         with col_gmail:
@@ -1427,7 +1443,10 @@ with tab_history:
                 st.session_state["gs_read_triggered"] = True
 
         # Handle write trigger from sidebar
-        if st.session_state.pop("gs_write_triggered", False):
+        _gs_write = st.session_state.get("gs_write_triggered", False)
+        if "gs_write_triggered" in st.session_state:
+            del st.session_state["gs_write_triggered"]
+        if _gs_write:
             if not vdf_all.empty and market_key == "h2h":
                 with st.spinner("Записываю value bets в Google Sheets…"):
                     ok, msg = log_value_bets_to_sheets(vdf_all, cur_sport, _gs_url)
@@ -1439,7 +1458,10 @@ with tab_history:
                 st.warning("Нет value bets для записи. Сначала загрузи коэффициенты (рынок H2H).")
 
         # Handle read trigger
-        if st.session_state.pop("gs_read_triggered", False):
+        _gs_read = st.session_state.get("gs_read_triggered", False)
+        if "gs_read_triggered" in st.session_state:
+            del st.session_state["gs_read_triggered"]
+        if _gs_read:
             with st.spinner("Читаю историю из Google Sheets…"):
                 hist_df, hist_err = read_history_from_sheets(_gs_url)
             if hist_err:
