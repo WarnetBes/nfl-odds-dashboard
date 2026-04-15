@@ -1,0 +1,21 @@
+name               = "sports-odds-dashboard"
+main               = "worker.js"
+compatibility_date = "2024-01-01"
+account_id         = "b6c17fdb6658619e70419e4d76a08eda"
+
+# Cloudflare Workers Free tier: 100k req/day, 10ms CPU
+# Upgrade to Paid ($5/mo) for 10M req/day + 30ms CPU
+
+[observability]
+enabled = true
+
+# KV namespace для хранения пользовательских настроек темы
+# Раскомментировать после создания через `wrangler kv:namespace create "USER_PREFS"`
+# [[kv_namespaces]]
+# binding = "USER_PREFS"
+# id      = "REPLACE_WITH_KV_NAMESPACE_ID"
+
+# Роут: все запросы к домену идут через Worker
+# routes = [
+#   { pattern = "odds.yourdomain.com/*", zone_name = "yourdomain.com" }
+# ]

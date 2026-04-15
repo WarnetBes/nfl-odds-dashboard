@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sports Odds Dashboard — Offline</title>
+  <link rel="manifest" href="/manifest.json" />
+  <meta name="theme-color" content="#0d1b2a" />
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: #0d1b2a;
+      color: #e2e8f0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 2rem;
+      text-align: center;
+    }
+    .logo { font-size: 4rem; margin-bottom: 1rem; }
+    h1 {
+      font-size: 1.6rem;
+      font-weight: 800;
+      background: linear-gradient(135deg, #a78bfa, #38bdf8);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      margin-bottom: .5rem;
+    }
+    p { color: #64748b; font-size: .95rem; line-height: 1.6; max-width: 300px; }
+    .status {
+      margin-top: 2rem;
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 14px;
+      padding: 1rem 1.5rem;
+      font-size: .85rem;
+      color: #94a3b8;
+    }
+    .dot {
+      display: inline-block; width: 8px; height: 8px;
+      border-radius: 50%; background: #f59e0b;
+      animation: blink 1.5s infinite;
+      margin-right: 6px;
+    }
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.3} }
+    button {
+      margin-top: 1.5rem;
+      background: linear-gradient(135deg, #7c3aed, #2563eb);
+      border: none; color: #fff;
+      padding: .75rem 2rem;
+      border-radius: 12px;
+      font-size: 1rem; font-weight: 600;
+      cursor: pointer;
+      min-height: 48px;
+    }
+    button:hover { opacity: .9; }
+  </style>
+</head>
+<body>
+  <div class="logo">🏆</div>
+  <h1>Sports Odds Dashboard</h1>
+  <p>Нет подключения к интернету.<br>Последние данные могут быть устаревшими.</p>
+  <div class="status">
+    <span class="dot"></span>
+    Ожидание подключения…
+  </div>
+  <button onclick="window.location.reload()">🔄 Повторить</button>
+  <script>
+    window.addEventListener('online', () => window.location.reload());
+  </script>
+</body>
+</html>

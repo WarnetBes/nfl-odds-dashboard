@@ -418,6 +418,83 @@ hr { border-color: #1e3a5f !important; margin: 1rem 0 !important; }
 """, unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────
+#  LIGHT THEME CSS (applied dynamically after session_state is ready)
+# ─────────────────────────────────────────────
+LIGHT_CSS = """
+<style>
+/* ── LIGHT THEME OVERRIDES ─────────────────────── */
+html, body, [class*="css"] {
+    background-color: #f8fafc !important;
+    color: #1e293b !important;
+}
+.block-container {
+    background-color: #f8fafc !important;
+}
+/* Sidebar */
+[data-testid="stSidebar"] {
+    background: linear-gradient(180deg, #f1f5f9 0%, #e2e8f0 100%) !important;
+    border-right: 1px solid #cbd5e1 !important;
+}
+[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] h2 {
+    color: #7c3aed !important;
+}
+/* Metric cards */
+[data-testid="stMetric"] {
+    background: linear-gradient(135deg, #ffffff, #f1f5f9) !important;
+    border: 1px solid #cbd5e1 !important;
+}
+[data-testid="stMetric"]:hover { border-color: #7c3aed !important; }
+[data-testid="stMetricValue"] { color: #1e293b !important; }
+[data-testid="stMetricLabel"] { color: #64748b !important; }
+/* Tabs */
+[data-testid="stTabs"] [data-baseweb="tab-list"] {
+    background: #f1f5f9 !important;
+    border: 1px solid #cbd5e1 !important;
+}
+[data-testid="stTabs"] [role="tab"] { color: #475569 !important; }
+[data-testid="stTabs"] [role="tab"]:hover:not([aria-selected="true"]) {
+    background: #e2e8f0 !important;
+    color: #1e293b !important;
+}
+/* Inputs */
+[data-testid="stTextInput"] > div > input,
+[data-testid="stNumberInput"] > div > input,
+[data-testid="stSelectbox"] > div > div {
+    background: #ffffff !important;
+    border: 1px solid #cbd5e1 !important;
+    color: #1e293b !important;
+}
+/* DataFrames */
+[data-testid="stDataFrame"] {
+    border: 1px solid #cbd5e1 !important;
+}
+/* Score cards */
+.score-card {
+    background: linear-gradient(135deg, #f1f5f9 0%, #ffffff 100%) !important;
+    border-color: #cbd5e1 !important;
+}
+.team-name { color: #1e293b !important; }
+.team-score { color: #2563eb !important; }
+/* Expander */
+[data-testid="stExpander"] {
+    background: #f1f5f9 !important;
+    border: 1px solid #cbd5e1 !important;
+}
+/* Divider */
+hr { border-color: #e2e8f0 !important; }
+/* Alert */
+[data-testid="stAlert"] { background: #eff6ff !important; }
+/* Scrollbar */
+::-webkit-scrollbar-track { background: #f1f5f9 !important; }
+::-webkit-scrollbar-thumb { background: #cbd5e1 !important; }
+/* Main title adapts */
+.subtitle { color: #475569 !important; }
+/* Timer bar */
+.timer-bar { background: #f1f5f9 !important; border-color: #cbd5e1 !important; color: #475569 !important; }
+</style>
+"""
+
+# ─────────────────────────────────────────────
 #  HELPERS — MATH
 # ─────────────────────────────────────────────
 def american_to_decimal(v: float) -> float:
@@ -875,6 +952,7 @@ defaults = {
     "saved_api_key": "",       # persisted API key
     "selected_bm_state": [],   # persisted bookmaker selection
     "sport_filter": "Все",    # sport category filter
+    "theme": "dark",           # dark | light — сохраняется между сессиями
 }
 for k, v in defaults.items():
     if k not in st.session_state:
@@ -885,6 +963,19 @@ for k, v in defaults.items():
 # ─────────────────────────────────────────────
 with st.sidebar:
     st.markdown("## ⚙️ Настройки")
+
+    # ── Тема ────────────────────────────────
+    _theme_cols = st.columns(2)
+    with _theme_cols[0]:
+        _dark_btn  = st.button("🌑 Тёмная",  use_container_width=True,
+                               type="primary" if st.session_state.theme=="dark"  else "secondary",
+                               key="btn_theme_dark")
+    with _theme_cols[1]:
+        _light_btn = st.button("☀️ Светлая", use_container_width=True,
+                               type="primary" if st.session_state.theme=="light" else "secondary",
+                               key="btn_theme_light")
+    if _dark_btn:  st.session_state.theme = "dark"
+    if _light_btn: st.session_state.theme = "light"
     st.divider()
 
     # ── Odds API ──────────────────────────────
@@ -1031,11 +1122,45 @@ with st.sidebar:
     st.caption("📡 [The Odds API](https://the-odds-api.com) · [ESPN API](https://site.api.espn.com)")
 
 # ─────────────────────────────────────────────
+#  THEME APPLICATION + PWA INJECTION
+# ─────────────────────────────────────────────
+_current_theme = st.session_state.get("theme", "dark")
+if _current_theme == "light":
+    st.markdown(LIGHT_CSS, unsafe_allow_html=True)
+
+# PWA meta-теги + SW регистрация (через Streamlit в body, браузер подхватывает)
+st.markdown("""
+<link rel="manifest" href="https://sports-odds-dashboard.warnetbesholin.workers.dev/manifest.json" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="OddsDash" />
+<meta name="theme-color" content="#0d1b2a" id="pwa-theme-color" />
+<link rel="apple-touch-icon" href="https://sports-odds-dashboard.warnetbesholin.workers.dev/icons/apple-touch-icon.png" />
+<script>
+  // Register Service Worker from Cloudflare Worker
+  (function() {
+    var SW_URL = 'https://sports-odds-dashboard.warnetbesholin.workers.dev/sw.js';
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', function() {
+        navigator.serviceWorker.register(SW_URL)
+          .then(function(r){ console.log('[PWA] SW ok', r.scope); })
+          .catch(function(e){ console.warn('[PWA] SW failed', e); });
+      });
+    }
+    // Тема в meta theme-color
+    var tc = document.getElementById('pwa-theme-color');
+    if (tc) tc.content = localStorage.getItem('odds_theme_color') || '#0d1b2a';
+  })();
+</script>
+""", unsafe_allow_html=True)
+
+# ─────────────────────────────────────────────
 #  HEADER
 # ─────────────────────────────────────────────
 st.markdown(
-    '<div class="main-title">🏆 Sports Odds Dashboard</div>'
-    '<div class="subtitle">NFL · Football · NBA &nbsp;·&nbsp; Live Odds &nbsp;·&nbsp; Value Bets &nbsp;·&nbsp; Arbitrage &nbsp;·&nbsp; Live Scores</div>',
+    f'<div class="main-title">🏆 Sports Odds Dashboard</div>'
+    f'<div class="subtitle">NFL · Football · NBA &nbsp;·&nbsp; Live Odds &nbsp;·&nbsp; Value Bets &nbsp;·&nbsp; Arbitrage &nbsp;·&nbsp; Live Scores</div>',
     unsafe_allow_html=True
 )
 
