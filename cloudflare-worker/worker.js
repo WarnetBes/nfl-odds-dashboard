@@ -1,16 +1,20 @@
 // ═══════════════════════════════════════════════════════════
-//  Sports Odds Dashboard — Cloudflare Worker v3 (fixed)
-//  • Хостит PWA статику (manifest, sw.js, offline, иконки)
-//  • Проксирует всё остальное на Streamlit Cloud
-//  • Инжектирует PWA meta-теги в HTML-ответы Streamlit
-//  Deploy: https://sports-odds-dashboard.warnetbesholin.workers.dev
+//  Sports Odds Dashboard — Cloudflare Worker v4
+//  Исправления относительно v3:
+//  BUG-1: setTimeout/clearTimeout → AbortSignal.timeout() (CF Workers совместимость)
+//  BUG-2: catch { } → catch (_e) { } (optional catch binding, совместимость)
+//  BUG-3: CORS заголовки добавляются ко ВСЕМ ответам (не только PWA-статике)
+//  BUG-4: убрали headers.set('host') — CF Workers игнорирует его, ставит сам
+//  BUG-5: <\/script> → </script> в PWA_SNIPPET (неверное экранирование)
+//  BUG-6: WebSocket proxy через WebSocketPair (Streamlit интерактивность)
+//  BUG-7: /favicon.ico → редирект на /icons/icon-192x192.png
+//  BUG-8: placeholder {{ERROR_MESSAGE}} в OFFLINE_HTML вместо хрупкого .replace()
 // ═══════════════════════════════════════════════════════════
 
 const STREAMLIT_URL = "https://nfl-odds-dashboard-cwetbvdeqon6p5ujc7hz6u.streamlit.app";
-
-// ── FIX 1: Таймаут для проксирования — Streamlit может долго отвечать ──
 const PROXY_TIMEOUT_MS = 25_000;
 
+// ── Manifest ──────────────────────────────────────────────────────────────────
 const MANIFEST = JSON.stringify({
   name: "Sports Odds Dashboard",
   short_name: "OddsDash",
@@ -31,25 +35,25 @@ const MANIFEST = JSON.stringify({
     { src: "/icons/icon-152x152.png", sizes: "152x152", type: "image/png", purpose: "any maskable" },
     { src: "/icons/icon-192x192.png", sizes: "192x192", type: "image/png", purpose: "any maskable" },
     { src: "/icons/icon-384x384.png", sizes: "384x384", type: "image/png", purpose: "any maskable" },
-    { src: "/icons/icon-512x512.png", sizes: "512x512", type: "image/png", purpose: "any maskable" }
+    { src: "/icons/icon-512x512.png", sizes: "512x512", type: "image/png", purpose: "any maskable" },
   ],
   shortcuts: [
     { name: "Сигналы",    url: "/?tab=signals" },
     { name: "Арбитраж",   url: "/?tab=arb"     },
-    { name: "Live Scores", url: "/?tab=live"   }
-  ]
+    { name: "Live Scores", url: "/?tab=live"   },
+  ],
 });
 
-// ── FIX 2: try/catch для парсинга push-данных внутри SW ──
+// ── Service Worker ────────────────────────────────────────────────────────────
 const SW_JS = `
-const CACHE = 'odds-v3';
-const STATIC = 'odds-static-v3';
+const CACHE = 'odds-v4';
+const STATIC = 'odds-static-v4';
 
 self.addEventListener('install', e => {
   e.waitUntil(
     caches.open(STATIC).then(c => c.addAll([
       '/', '/manifest.json', '/offline.html',
-      '/icons/icon-192x192.png', '/icons/icon-512x512.png'
+      '/icons/icon-192x192.png', '/icons/icon-512x512.png',
     ]))
   );
   self.skipWaiting();
@@ -69,8 +73,9 @@ self.addEventListener('fetch', e => {
   const url = new URL(e.request.url);
   if (url.protocol === 'wss:' || url.protocol === 'ws:') return;
 
-  // Cache-first for static PWA assets
-  if (url.pathname.startsWith('/icons/') || url.pathname === '/manifest.json' || url.pathname === '/offline.html') {
+  if (url.pathname.startsWith('/icons/') ||
+      url.pathname === '/manifest.json' ||
+      url.pathname === '/offline.html') {
     e.respondWith(
       caches.match(e.request).then(cached => cached || fetch(e.request).then(r => {
         if (r.ok) { const c = r.clone(); caches.open(STATIC).then(cache => cache.put(e.request, c)); }
@@ -80,7 +85,6 @@ self.addEventListener('fetch', e => {
     return;
   }
 
-  // Network-first for app pages
   e.respondWith(
     fetch(e.request)
       .then(r => {
@@ -93,15 +97,16 @@ self.addEventListener('fetch', e => {
 
 self.addEventListener('push', e => {
   if (!e.data) return;
+  // BUG-2 FIX: catch (_e) для совместимости
   let d;
-  try { d = e.data.json(); } catch { d = { title: '🎯 Value Bet Alert', body: e.data.text() }; }
+  try { d = e.data.json(); } catch (_e) { d = { title: '🎯 Value Bet Alert', body: e.data.text() }; }
   e.waitUntil(self.registration.showNotification(d.title || '🎯 Value Bet Alert', {
     body: d.body || 'Новая ставка с положительным EV!',
     icon: '/icons/icon-192x192.png',
     badge: '/icons/icon-72x72.png',
     tag: 'odds-alert',
     renotify: true,
-    data: { url: d.url || '/' }
+    data: { url: d.url || '/' },
   }));
 });
 
@@ -111,6 +116,7 @@ self.addEventListener('notificationclick', e => {
 });
 `;
 
+// ── Offline page — BUG-8 FIX: placeholder {{ERROR_MESSAGE}} ──────────────────
 const OFFLINE_HTML = `<!DOCTYPE html>
 <html lang="ru">
 <head>
@@ -142,21 +148,22 @@ const OFFLINE_HTML = `<!DOCTYPE html>
 <body>
   <div class="logo">🏆</div>
   <h1>Sports Odds Dashboard</h1>
-  <p>Нет подключения к интернету.<br>Последние данные могут быть устаревшими.</p>
+  <p>{{ERROR_MESSAGE}}</p>
   <div class="status"><span class="dot"></span>Ожидание подключения…</div>
   <button onclick="window.location.reload()">🔄 Повторить</button>
   <script>window.addEventListener('online', () => window.location.reload());</script>
 </body>
 </html>`;
 
-// ── FIX 3: фильтруем hop-by-hop заголовки при проксировании ────────────────
+// ── Hop-by-hop заголовки — фильтруем при проксировании ────────────────────────
+// BUG-4 FIX: убрали попытку headers.set('host') — CF Workers игнорирует его
 const HOP_BY_HOP = new Set([
   'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization',
   'te', 'trailers', 'transfer-encoding', 'upgrade', 'host',
 ]);
 
-const CORS = {
-  "Access-Control-Allow-Origin": "*",
+const CORS_HEADERS = {
+  "Access-Control-Allow-Origin":  "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type",
 };
@@ -166,11 +173,11 @@ function proxyRequestHeaders(original) {
   for (const [k, v] of original.entries()) {
     if (!HOP_BY_HOP.has(k.toLowerCase())) headers.set(k, v);
   }
-  headers.set('host', new URL(STREAMLIT_URL).host);
+  // BUG-4 FIX: НЕ устанавливаем 'host' — CF Workers делает это сам из URL
   return headers;
 }
 
-// ── PWA-сниппет вынесен в константу ─────────────────────────────────────────
+// BUG-5 FIX: </script> без экранирования — строка вставляется в HTML через .replace(), не в JS
 const PWA_SNIPPET = `
   <link rel="manifest" href="/manifest.json" />
   <meta name="mobile-web-app-capable" content="yes" />
@@ -188,16 +195,66 @@ const PWA_SNIPPET = `
       e.preventDefault();
       window._pwaPrompt = e;
     });
-  <\/script>`;
+  </script>`;
 
+// ── Вспомогательная функция для offline/error страниц ────────────────────────
+function offlinePage(message, status) {
+  return new Response(
+    OFFLINE_HTML.replace("{{ERROR_MESSAGE}}", message),
+    { status, headers: { "Content-Type": "text/html; charset=utf-8" } }
+  );
+}
+
+// ── BUG-6 FIX: WebSocket proxy через WebSocketPair ───────────────────────────
+async function handleWebSocket(request) {
+  const url = new URL(request.url);
+  const target = new URL(url.pathname + url.search, STREAMLIT_URL);
+  target.protocol = "wss:";
+
+  const [client, server] = Object.values(new WebSocketPair());
+  const proto = request.headers.get("sec-websocket-protocol") ?? undefined;
+  const upstream = new WebSocket(target.toString(), proto);
+
+  upstream.addEventListener("open", () => {
+    server.accept();
+  });
+
+  // Клиент → Streamlit
+  server.addEventListener("message", e => {
+    if (upstream.readyState === WebSocket.OPEN) upstream.send(e.data);
+  });
+  server.addEventListener("close", e => {
+    upstream.close(e.code, e.reason);
+  });
+
+  // Streamlit → клиент
+  upstream.addEventListener("message", e => {
+    server.send(e.data);
+  });
+  upstream.addEventListener("close", e => {
+    try { server.close(e.code, e.reason); } catch (_e) { /* already closed */ }
+  });
+  upstream.addEventListener("error", () => {
+    try { server.close(1011, "upstream error"); } catch (_e) { /* ignore */ }
+  });
+
+  return new Response(null, { status: 101, webSocket: client });
+}
+
+// ── Main handler ──────────────────────────────────────────────────────────────
 export default {
   async fetch(request, env, ctx) {
     const url  = new URL(request.url);
     const path = url.pathname;
 
-    // ── OPTIONS preflight ─────────────────────────────────────────────────────
+    // OPTIONS preflight
     if (request.method === "OPTIONS")
-      return new Response(null, { status: 204, headers: CORS });
+      return new Response(null, { status: 204, headers: CORS_HEADERS });
+
+    // BUG-6 FIX: WebSocket upgrade — Streamlit интерактивность (виджеты, live данные)
+    if (request.headers.get("upgrade") === "websocket") {
+      return handleWebSocket(request);
+    }
 
     // ── PWA static assets ─────────────────────────────────────────────────────
     if (path === "/manifest.json")
@@ -205,8 +262,8 @@ export default {
         headers: {
           "Content-Type": "application/manifest+json; charset=utf-8",
           "Cache-Control": "public, max-age=86400",
-          ...CORS
-        }
+          ...CORS_HEADERS,
+        },
       });
 
     if (path === "/sw.js")
@@ -214,48 +271,46 @@ export default {
         headers: {
           "Content-Type": "application/javascript; charset=utf-8",
           "Service-Worker-Allowed": "/",
-          // FIX 4: sw.js не должен кешироваться — иначе обновления не применяются
           "Cache-Control": "no-cache, no-store, must-revalidate",
-          ...CORS
-        }
+          ...CORS_HEADERS,
+        },
       });
 
     if (path === "/offline.html")
-      return new Response(OFFLINE_HTML, {
-        headers: {
-          "Content-Type": "text/html; charset=utf-8",
-          "Cache-Control": "public, max-age=86400",
-          ...CORS
+      return new Response(
+        OFFLINE_HTML.replace("{{ERROR_MESSAGE}}", "Нет подключения к интернету.<br>Последние данные могут быть устаревшими."),
+        {
+          headers: {
+            "Content-Type": "text/html; charset=utf-8",
+            "Cache-Control": "public, max-age=86400",
+            ...CORS_HEADERS,
+          },
         }
-      });
+      );
+
+    // BUG-7 FIX: /favicon.ico → редирект на иконку PWA
+    if (path === "/favicon.ico")
+      return Response.redirect(new URL("/icons/icon-192x192.png", url).toString(), 302);
 
     // ── Proxy to Streamlit ────────────────────────────────────────────────────
     try {
       const target = new URL(path + url.search, STREAMLIT_URL);
 
-      // FIX 5: AbortController + таймаут
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), PROXY_TIMEOUT_MS);
-
-      let resp;
-      try {
-        resp = await fetch(new Request(target.toString(), {
-          method:  request.method,
-          headers: proxyRequestHeaders(request.headers),
-          // FIX 6: пробрасываем body для POST (нужно для Streamlit WebSocket handshake)
-          body:    ["GET", "HEAD"].includes(request.method) ? undefined : request.body,
-          signal:  controller.signal,
-          redirect: "follow",
-        }));
-      } finally {
-        clearTimeout(timer);
-      }
+      // BUG-1 FIX: AbortSignal.timeout() вместо setTimeout/clearTimeout
+      // CF Workers НЕ поддерживают глобальный setTimeout — это Node.js/browser API
+      const resp = await fetch(new Request(target.toString(), {
+        method:   request.method,
+        headers:  proxyRequestHeaders(request.headers),
+        body:     ["GET", "HEAD"].includes(request.method) ? undefined : request.body,
+        signal:   AbortSignal.timeout(PROXY_TIMEOUT_MS),
+        redirect: "follow",
+      }));
 
       const contentType = resp.headers.get("content-type") ?? "";
 
+      // HTML: инжектируем PWA-сниппет
       if (contentType.includes("text/html")) {
         const html    = await resp.text();
-        // FIX 7: fallback если </head> отсутствует в ответе
         const patched = html.includes("</head>")
           ? html.replace("</head>", PWA_SNIPPET + "\n  </head>")
           : html + PWA_SNIPPET;
@@ -263,28 +318,28 @@ export default {
         const newHeaders = new Headers(resp.headers);
         newHeaders.set("Content-Type", "text/html; charset=utf-8");
         newHeaders.delete("Content-Security-Policy");
+        // BUG-3 FIX: CORS и для HTML-ответов
+        for (const [k, v] of Object.entries(CORS_HEADERS)) newHeaders.set(k, v);
 
         return new Response(patched, { status: resp.status, headers: newHeaders });
       }
 
-      // FIX 8: все не-HTML ответы пробрасываем напрямую через body stream
+      // BUG-3 FIX: CORS ко всем non-HTML проксированным ответам
+      const proxyHeaders = new Headers(resp.headers);
+      for (const [k, v] of Object.entries(CORS_HEADERS)) proxyHeaders.set(k, v);
+
       return new Response(resp.body, {
         status:  resp.status,
-        headers: resp.headers,
+        headers: proxyHeaders,
       });
 
     } catch (err) {
-      // FIX 9: различаем таймаут (504) и недоступность сервиса (503)
-      const isTimeout = err.name === "AbortError";
+      const isTimeout = err.name === "TimeoutError" || err.name === "AbortError";
       const status    = isTimeout ? 504 : 503;
       const message   = isTimeout
-        ? "Streamlit не ответил вовремя. Попробуйте ещё раз."
-        : "Сервис временно недоступен.";
-
-      return new Response(
-        OFFLINE_HTML.replace("Нет подключения к интернету.", message),
-        { status, headers: { "Content-Type": "text/html; charset=utf-8" } }
-      );
+        ? "Streamlit не ответил вовремя.<br>Попробуйте обновить страницу."
+        : "Сервис временно недоступен.<br>Повторите попытку позже.";
+      return offlinePage(message, status);
     }
-  }
+  },
 };
