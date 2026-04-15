@@ -20,6 +20,7 @@ utils.py — чистые функции без Streamlit-зависимосте
   15. fetch_scores_from_url    — HTTP-запрос ESPN (injectable session)
   16. make_h2h_row             — Фабрика тестовых строк DataFrame
 """
+from __future__ import annotations
 import math
 import pandas as pd
 
