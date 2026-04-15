@@ -6,6 +6,7 @@ Sports Odds Dashboard
 - Auto-refresh каждые 5 минут
 - Value Bets с EV Edge + Gmail-уведомления
 - Live Scores (ESPN Public API)
+- История ставок в Google Sheets
 """
 
 import streamlit as st
@@ -19,6 +20,14 @@ import time
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+import json
+
+try:
+    import gspread
+    from google.oauth2.service_account import Credentials as SACredentials
+    GSPREAD_OK = True
+except ImportError:
+    GSPREAD_OK = False
 
 # ─────────────────────────────────────────────
 #  PAGE CONFIG
@@ -196,6 +205,149 @@ def parse_to_df(events, market_key, has_draw):
                 rows.append(row)
     return pd.DataFrame(rows)
 
+def build_betting_signals(df: pd.DataFrame, has_draw: bool) -> pd.DataFrame:
+    """
+    Для каждого матча агрегирует данные по всем букмекерам и выдаёт чёткий сигнал:
+    - Лучший исход (макс EV Edge)
+    - Консенсус букмекеров (доля книг с max EV > 0)
+    - Средняя no-vig вероятность
+    - Лучший коэфф (max decimal odds)
+    - Уровень уверенности сигнала
+    """
+    signals = []
+
+    for match, grp in df.groupby("Матч"):
+        home = grp["Хозяева"].iloc[0]
+        away = grp["Гости"].iloc[0]
+        time_str = grp["Время"].iloc[0]
+
+        # Сбор данных по всем букмекерам
+        outcome_data = {}  # name -> list of (dec, impl, fair, ev, bm_name)
+
+        for _, row in grp.iterrows():
+            h_am = row.get("Odds Хозяева (Am)")
+            a_am = row.get("Odds Гости (Am)")
+            if h_am is None or a_am is None or str(h_am)=="nan" or str(a_am)=="nan":
+                continue
+            try:
+                h_dec  = american_to_decimal(float(h_am))
+                a_dec  = american_to_decimal(float(a_am))
+                h_impl = decimal_to_implied(h_dec)
+                a_impl = decimal_to_implied(a_dec)
+                d_am   = row.get("Odds Ничья (Am)")
+                if has_draw and d_am and str(d_am) != "nan":
+                    d_dec  = american_to_decimal(float(d_am))
+                    d_impl = decimal_to_implied(d_dec)
+                    nv     = no_vig_prob([h_impl, a_impl, d_impl])
+                    pairs  = [(home, h_dec, h_impl, nv[0], fmt_am(h_am)),
+                              (away, a_dec, a_impl, nv[1], fmt_am(a_am)),
+                              ("Ничья", d_dec, d_impl, nv[2], fmt_am(d_am))]
+                else:
+                    nv    = no_vig_prob([h_impl, a_impl])
+                    pairs = [(home, h_dec, h_impl, nv[0], fmt_am(h_am)),
+                             (away, a_dec, a_impl, nv[1], fmt_am(a_am))]
+
+                for name, dec, impl, fair, am_str in pairs:
+                    edge = ev_edge(fair, dec) * 100
+                    if name not in outcome_data:
+                        outcome_data[name] = []
+                    outcome_data[name].append({
+                        "dec": dec, "impl": impl, "fair": fair,
+                        "edge": edge, "bm": row["Букмекер"], "am": am_str
+                    })
+            except Exception:
+                continue
+
+        if not outcome_data:
+            continue
+
+        total_bm_count = len(grp["Букмекер"].unique())
+
+        # Анализируем каждый исход
+        best_outcome = None
+        best_edge    = -999
+
+        outcome_stats = {}
+        for name, entries in outcome_data.items():
+            edges    = [e["edge"] for e in entries]
+            fairs    = [e["fair"] for e in entries]
+            decs     = [e["dec"]  for e in entries]
+            positive = [e for e in entries if e["edge"] > 0]
+            consensus_pct = round(len(positive) / total_bm_count * 100)
+
+            avg_edge  = round(sum(edges) / len(edges), 2)
+            max_edge  = round(max(edges), 2)
+            avg_fair  = round(sum(fairs) / len(fairs), 1)
+            best_dec  = max(decs)
+            best_bm   = next(e["bm"] for e in entries if e["dec"] == best_dec)
+            best_am   = next(e["am"] for e in entries if e["dec"] == best_dec)
+
+            # Уровень сигнала (0-100)
+            confidence = min(100, int(
+                (max(avg_edge, 0) * 4)      # +4 за каждый % EV
+                + (consensus_pct * 0.4)     # +консенсус
+                + (min(avg_fair - 33, 30))  # +за но-виг вероятность > 33%
+            ))
+
+            outcome_stats[name] = {
+                "avg_edge": avg_edge, "max_edge": max_edge,
+                "avg_fair": avg_fair, "best_dec": best_dec,
+                "best_bm": best_bm,  "best_am": best_am,
+                "consensus_pct": consensus_pct,
+                "confidence": confidence,
+                "books_count": len(entries),
+            }
+            if max_edge > best_edge:
+                best_edge    = max_edge
+                best_outcome = name
+
+        if best_outcome is None:
+            continue
+
+        bs = outcome_stats[best_outcome]
+
+        # Сигнал-эмодзи
+        if bs["confidence"] >= 70:
+            signal_emoji = "🟢"   # зелёный = сильный сигнал
+            signal_text  = "СИЛЬНЫЙ"
+        elif bs["confidence"] >= 40:
+            signal_emoji = "🟡"   # жёлтый = умеренный
+            signal_text  = "УМЕРЕННЫЙ"
+        elif bs["avg_edge"] > 0:
+            signal_emoji = "🔵"   # синий = слабый
+            signal_text  = "СЛАБЫЙ"
+        else:
+            signal_emoji = "⚪"   # серый = нет преимущества
+            signal_text  = "НЕТ"
+
+        # Альтернативные исходы
+        other_outcomes = [
+            f"{n}: EV {s['avg_edge']:+.1f}% / fair {s['avg_fair']:.0f}%"
+            for n, s in outcome_stats.items() if n != best_outcome
+        ]
+
+        signals.append({
+            "Матч":          match,
+            "Время":         time_str,
+            "Сигнал":        f"{signal_emoji} {signal_text}",
+            "На кого ставить": best_outcome,
+            "Лучший букмекер": bs["best_bm"],
+            "Odds (Am)":       bs["best_am"],
+            "Odds (Dec)":      bs["best_dec"],
+            "EV Edge %":       f"{bs['max_edge']:+.2f}%",
+            "No-Vig Fair %":   f"{bs['avg_fair']:.1f}%",
+            "Консенсус книг": f"{bs['consensus_pct']}%  ({bs['books_count']}/{total_bm_count})",
+            "Уверенность":    bs["confidence"],
+            "Другие исходы":  " | ".join(other_outcomes),
+            "_conf":           bs["confidence"],
+            "_edge":           bs["max_edge"],
+        })
+
+    if not signals:
+        return pd.DataFrame()
+    return pd.DataFrame(signals).sort_values(["_conf","_edge"], ascending=False).reset_index(drop=True)
+
+
 def compute_value_bets(df, has_draw, min_edge_pct):
     rows = []
     for _, r in df.iterrows():
@@ -290,6 +442,123 @@ def send_gmail_alert(sender_email: str, sender_password: str, recipient: str,
         return False, "❌ Ошибка авторизации Gmail. Проверь email и App Password."
     except Exception as e:
         return False, f"❌ Ошибка отправки: {e}"
+
+# ─────────────────────────────────────────────
+#  HELPERS — GOOGLE SHEETS
+# ─────────────────────────────────────────────
+
+GSHEETS_SCOPES = [
+    "https://spreadsheets.google.com/feeds",
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
+]
+
+SHEET_HEADERS = [
+    "Дата", "Время МСК", "Спорт", "Матч", "Букмекер",
+    "Исход", "Odds (Am)", "Odds (Dec)", "Implied %",
+    "No-Vig Fair %", "EV Edge %",
+]
+
+
+def get_gspread_client():
+    """Создаёт авторизованный gspread клиент из st.secrets."""
+    if not GSPREAD_OK:
+        return None, "gspread не установлен"
+    try:
+        sa_info = dict(st.secrets["gcp_service_account"])
+        creds = SACredentials.from_service_account_info(sa_info, scopes=GSHEETS_SCOPES)
+        client = gspread.authorize(creds)
+        return client, None
+    except KeyError:
+        return None, "Секрет gcp_service_account не найден в st.secrets"
+    except Exception as e:
+        return None, f"Ошибка авторизации: {e}"
+
+
+def get_or_create_sheet(client, spreadsheet_url: str, sheet_name: str = "ValueBets"):
+    """Открывает таблицу и возвращает нужный лист, создаёт если не существует."""
+    try:
+        wb = client.open_by_url(spreadsheet_url)
+    except gspread.SpreadsheetNotFound:
+        return None, f"Таблица не найдена: {spreadsheet_url}\nРасшарь её с service account email."
+    except Exception as e:
+        return None, f"Ошибка открытия таблицы: {e}"
+
+    # Найти или создать лист
+    try:
+        ws = wb.worksheet(sheet_name)
+    except gspread.WorksheetNotFound:
+        ws = wb.add_worksheet(title=sheet_name, rows=2000, cols=len(SHEET_HEADERS))
+        ws.append_row(SHEET_HEADERS, value_input_option="USER_ENTERED")
+        # Форматирование заголовка
+        try:
+            ws.format("A1:K1", {
+                "backgroundColor": {"red": 0.0, "green": 0.47, "blue": 0.84},
+                "textFormat": {"bold": True, "foregroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0}},
+            })
+        except Exception:
+            pass
+    return ws, None
+
+
+def log_value_bets_to_sheets(vdf: pd.DataFrame, sport_label: str, spreadsheet_url: str) -> tuple:
+    """Добавляет найденные value bets в Google Sheets. Возвращает (ok, message, count)."""
+    if vdf.empty:
+        return False, "Нет данных для логирования", 0
+
+    client, err = get_gspread_client()
+    if err:
+        return False, err, 0
+
+    ws, err = get_or_create_sheet(client, spreadsheet_url)
+    if err:
+        return False, err, 0
+
+    now = datetime.now(MSK)
+    date_str = now.strftime("%d.%m.%Y")
+    time_str = now.strftime("%H:%M")
+
+    rows_to_add = []
+    for _, row in vdf.iterrows():
+        rows_to_add.append([
+            date_str,
+            time_str,
+            sport_label,
+            row.get("Матч", ""),
+            row.get("Букмекер", ""),
+            str(row.get("Исход", "")).replace("✅ ", ""),
+            str(row.get("Odds (Am)", "")),
+            str(row.get("Odds (Dec)", "")),
+            str(row.get("Implied %", "")),
+            str(row.get("No-Vig Fair %", "")),
+            str(row.get("EV Edge %", "")),
+        ])
+
+    try:
+        ws.append_rows(rows_to_add, value_input_option="USER_ENTERED")
+        return True, f"✅ Записано {len(rows_to_add)} строк в Google Sheets", len(rows_to_add)
+    except Exception as e:
+        return False, f"Ошибка записи: {e}", 0
+
+
+def read_history_from_sheets(spreadsheet_url: str, sheet_name: str = "ValueBets") -> tuple:
+    """Читает историю из Google Sheets, возвращает (df, error)."""
+    client, err = get_gspread_client()
+    if err:
+        return pd.DataFrame(), err
+
+    ws, err = get_or_create_sheet(client, spreadsheet_url, sheet_name)
+    if err:
+        return pd.DataFrame(), err
+
+    try:
+        data = ws.get_all_records()
+        if not data:
+            return pd.DataFrame(columns=SHEET_HEADERS), None
+        return pd.DataFrame(data), None
+    except Exception as e:
+        return pd.DataFrame(), f"Ошибка чтения: {e}"
+
 
 # ─────────────────────────────────────────────
 #  HELPERS — ESPN LIVE SCORES
@@ -552,6 +821,33 @@ with st.sidebar:
         else:
             st.warning("Заполни email и App Password")
 
+    # ── Google Sheets ────────────────────
+    st.divider()
+    st.markdown("⚡ **Google Sheets** — История ставок**")
+    gsheets_on = st.toggle("Авто-логирование value bets", value=False, key="gsheets_on")
+
+    # URL читаем из secrets или из поля
+    _default_url = ""
+    try:
+        _default_url = st.secrets.get("GSHEET_URL", "")
+    except Exception:
+        pass
+    gsheet_url = st.text_input(
+        "URL Google Таблицы",
+        value=_default_url,
+        placeholder="https://docs.google.com/spreadsheets/d/.../edit",
+        help="Расшарь таблицу с service account email из секретов",
+    )
+    # Store URL in session_state so History tab can access it
+    st.session_state["gsheet_url"] = gsheet_url
+    col_gs1, col_gs2 = st.columns(2)
+    with col_gs1:
+        if st.button("📝 Записать сейчас", use_container_width=True, key="gs_write_now"):
+            st.session_state["gs_write_triggered"] = True
+    with col_gs2:
+        if st.button("📖 Читать", use_container_width=True, key="gs_read_now"):
+            st.session_state["gs_read_triggered"] = True
+
     st.divider()
     fetch_btn = st.button("🔄 Загрузить коэффициенты", use_container_width=True, type="primary")
     st.divider()
@@ -692,14 +988,111 @@ st.divider()
 # ─────────────────────────────────────────────
 #  TABS
 # ─────────────────────────────────────────────
-tab_table, tab_chart, tab_value, tab_live = st.tabs([
+tab_signals, tab_table, tab_chart, tab_value, tab_live, tab_history = st.tabs([
+    "🎯 Сигналы",
     "📋 Коэффициенты",
     "📊 Сравнение букмекеров",
     "💎 Value Bets",
     "📺 Live Scores",
+    "📊 История ставок",
 ])
 
 DARK = dict(plot_bgcolor="#0d1b2a", paper_bgcolor="#0d1b2a", font_color="#e2e8f0")
+
+# ── TAB 0: BETTING SIGNALS ────────────────────────
+with tab_signals:
+    st.markdown("#### 🎯 На кого ставить — агрегированные сигналы")
+    if market_key != "h2h":
+        st.info("ℹ️ Сигналы работают только для рынка **H2H / 1X2**.")
+    else:
+        sdf = build_betting_signals(df, has_draw)
+        if sdf.empty:
+            st.warning("Недостаточно данных для генерации сигналов. Загрузи коэффициенты сначала.")
+        else:
+            # Legend
+            st.markdown(
+                """
+<div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:12px">
+  <span style="background:#065f46;color:#4ade80;padding:4px 12px;border-radius:20px;font-weight:700">🟢 СИЛЬНЫЙ (&ge;70 conf)</span>
+  <span style="background:#713f12;color:#fde68a;padding:4px 12px;border-radius:20px;font-weight:700">🟡 УМЕРЕННЫЙ (&ge;40 conf)</span>
+  <span style="background:#1e3a5f;color:#93c5fd;padding:4px 12px;border-radius:20px;font-weight:700">🔵 СЛАБЫЙ (EV>0)</span>
+  <span style="background:#1e293b;color:#94a3b8;padding:4px 12px;border-radius:20px">⚪ НЕТ (нет преимущества)</span>
+</div>""",
+                unsafe_allow_html=True,
+            )
+
+            # Cards for each match
+            for _, sig in sdf.iterrows():
+                conf = int(sig["_conf"]) if "_conf" in sig else int(sig.get("Уверенность", 0))
+                edge_val = float(sig["_edge"]) if "_edge" in sig else 0.0
+                signal_str = str(sig["Сигнал"])
+
+                if conf >= 70:
+                    card_bg, border, text_clr = "#0d2a1a", "#4ade80", "#4ade80"
+                elif conf >= 40:
+                    card_bg, border, text_clr = "#2a1a00", "#fde68a", "#fde68a"
+                elif edge_val > 0:
+                    card_bg, border, text_clr = "#0d1b2a", "#93c5fd", "#93c5fd"
+                else:
+                    card_bg, border, text_clr = "#111827", "#475569", "#94a3b8"
+
+                st.markdown(f"""
+<div style="background:{card_bg};border:2px solid {border};border-radius:12px;padding:16px 20px;margin-bottom:14px">
+  <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+    <div>
+      <div style="font-size:11px;color:#94a3b8;margin-bottom:2px">{sig["Матч"]} &middot; {sig["Время"]}</div>
+      <div style="font-size:20px;font-weight:800;color:{text_clr}">{signal_str} — СТАВИТЬ: {sig["На кого ставить"]}</div>
+    </div>
+    <div style="text-align:right">
+      <div style="font-size:22px;font-weight:900;color:{text_clr}">{sig["Odds (Am)"]}</div>
+      <div style="font-size:12px;color:#94a3b8">{sig["Odds (Dec)"]:.2f} децимал</div>
+    </div>
+  </div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin-top:12px">
+    <div style="background:#1e293b;border-radius:8px;padding:8px 12px">
+      <div style="font-size:10px;color:#64748b">🏦 Лучший букмекер</div>
+      <div style="font-size:14px;font-weight:700;color:#e2e8f0">{sig["Лучший букмекер"]}</div>
+    </div>
+    <div style="background:#1e293b;border-radius:8px;padding:8px 12px">
+      <div style="font-size:10px;color:#64748b">💰 EV Edge</div>
+      <div style="font-size:14px;font-weight:700;color:{'#4ade80' if edge_val>0 else '#f87171'}">{sig["EV Edge %"]}</div>
+    </div>
+    <div style="background:#1e293b;border-radius:8px;padding:8px 12px">
+      <div style="font-size:10px;color:#64748b">📉 No-Vig Fair</div>
+      <div style="font-size:14px;font-weight:700;color:#e2e8f0">{sig["No-Vig Fair %"]}</div>
+    </div>
+    <div style="background:#1e293b;border-radius:8px;padding:8px 12px">
+      <div style="font-size:10px;color:#64748b">🤝 Консенсус</div>
+      <div style="font-size:14px;font-weight:700;color:#e2e8f0">{sig["Консенсус книг"]}</div>
+    </div>
+  </div>
+  <div style="margin-top:10px">
+    <div style="font-size:10px;color:#64748b;margin-bottom:4px">Уверенность сигнала: {conf}/100</div>
+    <div style="background:#0f172a;border-radius:4px;height:8px;overflow:hidden">
+      <div style="background:{border};height:8px;width:{conf}%;border-radius:4px;transition:width .4s"></div>
+    </div>
+  </div>
+  {'<div style="font-size:11px;color:#64748b;margin-top:8px">🔄 ' + str(sig['Другие исходы']) + '</div>' if sig['Другие исходы'] else ''}
+</div>""", unsafe_allow_html=True)
+
+            # Summary bar chart: confidence by match
+            fig_sig = go.Figure(go.Bar(
+                x=sdf["На кого ставить"] + " (" + sdf["Матч"] + ")",
+                y=sdf["_conf" if "_conf" in sdf.columns else "Уверенность"],
+                marker_color=[
+                    "#4ade80" if c >= 70 else "#fde68a" if c >= 40 else "#93c5fd" if c > 0 else "#475569"
+                    for c in sdf["_conf" if "_conf" in sdf.columns else "Уверенность"]
+                ],
+                text=[f"{e}" for e in sdf["EV Edge %"]],
+                textposition="outside",
+            ))
+            fig_sig.update_layout(
+                title="Уверенность сигнала (по бест исходу каждого матча)",
+                xaxis_title="Исход", yaxis_title="Уверенность (0–100)",
+                yaxis_range=[0, 110],
+                height=380, **DARK,
+            )
+            st.plotly_chart(fig_sig, use_container_width=True)
 
 # ── TAB 1: TABLE ──────────────────────────────
 with tab_table:
@@ -960,6 +1353,101 @@ with tab_live:
     # Auto-refresh scores every 60s
     if st.session_state.auto_refresh:
         st.markdown('<meta http-equiv="refresh" content="60">', unsafe_allow_html=True)
+
+# ── TAB 6: HISTORY (Google Sheets) ────────────────────
+with tab_history:
+    st.markdown("#### 📊 История ставок — Google Sheets")
+
+    _gs_url = st.session_state.get("gsheet_url", "")
+    if not _gs_url:
+        st.info("ℹ️ Укажи URL Google Таблицы в боковой панели (раздел ‘Google Sheets’).")
+    else:
+        col_h1, col_h2 = st.columns([2, 1])
+        with col_h1:
+            st.caption(f"🔗 Таблица: [{_gs_url[:60]}...]({_gs_url})")
+        with col_h2:
+            if st.button("📥 Обновить / Читать", use_container_width=True, key="hist_read_btn"):
+                st.session_state["gs_read_triggered"] = True
+
+        # Handle write trigger from sidebar
+        if st.session_state.pop("gs_write_triggered", False):
+            if not vdf_all.empty and market_key == "h2h":
+                with st.spinner("Записываю value bets в Google Sheets…"):
+                    ok, msg = log_value_bets_to_sheets(vdf_all, cur_sport, _gs_url)
+                if ok:
+                    st.success(f"✅ {msg}")
+                else:
+                    st.error(f"❌ {msg}")
+            else:
+                st.warning("Нет value bets для записи. Сначала загрузи коэффициенты (рынок H2H).")
+
+        # Handle read trigger
+        if st.session_state.pop("gs_read_triggered", False):
+            with st.spinner("Читаю историю из Google Sheets…"):
+                hist_df, hist_err = read_history_from_sheets(_gs_url)
+            if hist_err:
+                st.error(f"❌ {hist_err}")
+            elif hist_df is not None and not hist_df.empty:
+                st.session_state["history_df"] = hist_df
+
+        # Display stored history
+        hist_display = st.session_state.get("history_df")
+        if hist_display is not None and not hist_display.empty:
+            st.success(f"✅ Загружено **{len(hist_display)}** записей из истории")
+
+            # Summary metrics
+            m1, m2, m3, m4 = st.columns(4)
+            try:
+                ev_col = [c for c in hist_display.columns if "EV" in c or "edge" in c.lower()]
+                if ev_col:
+                    evs = pd.to_numeric(hist_display[ev_col[0]].astype(str).str.replace("%","").str.replace("+",""), errors="coerce")
+                    with m1: st.metric("Ср. EV Edge", f"{evs.mean():.1f}%" if not evs.isna().all() else "—")
+                    with m2: st.metric("Макс EV Edge", f"{evs.max():.1f}%" if not evs.isna().all() else "—")
+                with m3: st.metric("Всего записей", len(hist_display))
+                bm_col = [c for c in hist_display.columns if "Букмекер" in c or "book" in c.lower()]
+                if bm_col:
+                    with m4: st.metric("Уник. букмекеров", hist_display[bm_col[0]].nunique())
+            except Exception:
+                pass
+
+            st.dataframe(hist_display, use_container_width=True,
+                         height=min(600, 60 + len(hist_display) * 36))
+            st.download_button("⬇️ Скачать CSV",
+                               hist_display.to_csv(index=False).encode(),
+                               "value_bets_history.csv", mime="text/csv")
+        else:
+            st.info("📊 История пуста. \n\n"
+                    "Чтобы заполнить: \n"
+                    "1. Загрузи коэффициенты (рынок **H2H**) \n"
+                    "2. Нажми **‘📝 Записать сейча’** в боковой панели \n"
+                    "3. Нажми **‘📛 Обновить / Читать’** выше")
+
+        # Instructions for setup
+        with st.expander("ℹ️ Настройка Google Sheets", expanded=False):
+            st.markdown("""
+**Шаг 1.** Создай Google Cloud проект и включи **Google Sheets API + Google Drive API**.
+
+**Шаг 2.** Создай Service Account, скачай JSON-ключ.
+
+**Шаг 3.** Расшарий таблицу с email Service Account (роль Редактор).
+
+**Шаг 4.** В Streamlit Cloud добавь секреты в формате:
+```toml
+GSHEET_URL = "https://docs.google.com/spreadsheets/d/.../edit"
+
+[gcp_service_account]
+type = "service_account"
+project_id = "..."
+private_key_id = "..."
+private_key = "-----BEGIN PRIVATE KEY-----\\n...\\n-----END PRIVATE KEY-----\\n"
+client_email = "...@....iam.gserviceaccount.com"
+client_id = "..."
+auth_uri = "https://accounts.google.com/o/oauth2/auth"
+token_uri = "https://oauth2.googleapis.com/token"
+auth_provider_x509_cert_url = "https://www.googleapis.com/oauth2/v1/certs"
+client_x509_cert_url = "..."
+```
+""")
 
 # ─────────────────────────────────────────────
 #  FOOTER
