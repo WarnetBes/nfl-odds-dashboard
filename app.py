@@ -1230,6 +1230,79 @@ with st.sidebar:
     )
     st.session_state["bankroll"] = bankroll
     fetch_btn = st.button("🔄 Загрузить коэффициенты", use_container_width=True, type="primary")
+
+    # ── Диагностика подключений ───────────────
+    st.divider()
+    st.markdown("**🔌 Диагностика подключений**")
+    if st.button("🩺 Проверить подключения", use_container_width=True, key="diag_btn"):
+        # --- The Odds API ---
+        _diag_key = (
+            st.session_state.get("api_key", "")
+            or (st.secrets.get("ODDS_API_KEY", "") if hasattr(st, "secrets") else "")
+            or _os.environ.get("ODDS_API_KEY", "")
+        )
+        with st.spinner("Проверяем The Odds API…"):
+            if not _diag_key:
+                st.error("❌ The Odds API: ключ не задан")
+            else:
+                try:
+                    _r = requests.get(
+                        f"{ODDS_BASE}/sports",
+                        params={"apiKey": _diag_key},
+                        timeout=8,
+                    )
+                    if _r.status_code == 200:
+                        _remaining = _r.headers.get("x-requests-remaining", "?")
+                        st.success(f"✅ The Odds API: OK — осталось {_remaining} запросов")
+                    elif _r.status_code == 401:
+                        st.error("❌ The Odds API: неверный ключ (401)")
+                    else:
+                        st.warning(f"⚠️ The Odds API: статус {_r.status_code}")
+                except Exception as _e:
+                    st.error(f"❌ The Odds API: {_e}")
+
+        # --- Gmail ---
+        _diag_gmail_from = st.session_state.get("diag_gmail_from", gmail_from if 'gmail_from' in dir() else "")
+        _diag_gmail_pass = st.session_state.get("diag_gmail_pass", gmail_pass if 'gmail_pass' in dir() else "")
+        _diag_gmail_to   = st.session_state.get("diag_gmail_to",   gmail_to   if 'gmail_to'   in dir() else "")
+        # Fallback to secrets
+        if not _diag_gmail_from:
+            try:
+                _diag_gmail_from = st.secrets.get("GMAIL_SENDER", "")
+                _diag_gmail_pass = st.secrets.get("GMAIL_APP_PASSWORD", "") or st.secrets.get("GMAIL_PASSWORD", "")
+                _diag_gmail_to   = st.secrets.get("GMAIL_TO", "")
+            except Exception:
+                pass
+        with st.spinner("Проверяем Gmail SMTP…"):
+            if not _diag_gmail_from or not _diag_gmail_pass:
+                st.warning("⚠️ Gmail: email или App Password не заполнены")
+            else:
+                try:
+                    import smtplib as _smtplib
+                    with _smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=8) as _srv:
+                        _srv.login(_diag_gmail_from, _diag_gmail_pass)
+                    st.success(f"✅ Gmail: авторизация OK ({_diag_gmail_from})")
+                except _smtplib.SMTPAuthenticationError:
+                    st.error("❌ Gmail: ошибка авторизации — проверь App Password")
+                except Exception as _e:
+                    st.error(f"❌ Gmail: {_e}")
+
+        # --- Google Sheets ---
+        _diag_gsheet_url = st.session_state.get("gsheet_url", "")
+        with st.spinner("Проверяем Google Sheets…"):
+            if not _diag_gsheet_url:
+                st.warning("⚠️ Google Sheets: URL не задан")
+            else:
+                _gs_client, _gs_err = get_gspread_client()
+                if _gs_client is None:
+                    st.error(f"❌ Google Sheets: {_gs_err}")
+                else:
+                    try:
+                        _sh = _gs_client.open_by_url(_diag_gsheet_url)
+                        st.success(f"✅ Google Sheets: OK — '{_sh.title}'")
+                    except Exception as _e:
+                        st.error(f"❌ Google Sheets: {_e}")
+
     st.divider()
     st.caption("📡 [The Odds API](https://the-odds-api.com) · [ESPN API](https://site.api.espn.com)")
 
