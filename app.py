@@ -1034,12 +1034,22 @@ def make_demo(sport_key: str, has_draw: bool) -> list:
 # ─────────────────────────────────────────────
 #  SESSION STATE INIT
 # ─────────────────────────────────────────────
+# Persistent API key — priority:
+# 1. Streamlit Cloud App Secrets (st.secrets["ODDS_API_KEY"]) — never resets
+# 2. Environment variable ODDS_API_KEY  — for CI / local .env
+# 3. Manual sidebar input              — fallback / local dev
+import os as _os
+_env_api_key = (
+    (st.secrets.get("ODDS_API_KEY", "") if hasattr(st, "secrets") else "")
+    or _os.environ.get("ODDS_API_KEY", "")
+)
+
 defaults = {
     "events": None, "remaining": None, "used": None,
     "demo_mode": False, "last_sport": None, "last_market": None,
     "last_fetch_ts": 0, "auto_refresh": True,
     "gmail_sent_ids": set(),   # track already-alerted value bets
-    "saved_api_key": "",       # persisted API key
+    "saved_api_key": _env_api_key,  # pre-filled from Secrets/env; empty = manual
     "selected_bm_state": [],   # persisted bookmaker selection
     "sport_filter": "Все",    # sport category filter
     "theme": "dark",           # dark | light — сохраняется между сессиями
@@ -1047,6 +1057,9 @@ defaults = {
 for k, v in defaults.items():
     if k not in st.session_state:
         st.session_state[k] = v
+# Re-inject env key if session was reset while env key exists
+if not st.session_state.saved_api_key and _env_api_key:
+    st.session_state.saved_api_key = _env_api_key
 
 # ─────────────────────────────────────────────
 #  SIDEBAR
@@ -1069,16 +1082,22 @@ with st.sidebar:
     st.divider()
 
     # ── Odds API ──────────────────────────────
-    _typed_key = st.text_input("🔑 The Odds API Key", type="password",
-        value=st.session_state.saved_api_key,
-        placeholder="Пусто = демо-режим",
-        help="https://the-odds-api.com — 500 запросов/мес бесплатно")
-    # Persist key across reruns
+    _key_from_cloud = bool(_env_api_key)
+    if _key_from_cloud:
+        st.success("🔑 API ключ подключён автоматически")
+        st.caption("Задан через Streamlit Secrets — ввод не нужен")
+        _typed_key = ""
+    else:
+        _typed_key = st.text_input("🔑 The Odds API Key", type="password",
+            value=st.session_state.saved_api_key,
+            placeholder="Пусто = демо-режим",
+            help="https://the-odds-api.com — 500 запросов/мес бесплатно")
+    # Persist key across reruns (manual input valid only in this session)
     if _typed_key:
         st.session_state.saved_api_key = _typed_key
     api_key = st.session_state.saved_api_key
-    if api_key:
-        st.caption("✅ API ключ сохранён")
+    if api_key and not _key_from_cloud:
+        st.caption("✅ API ключ сохранён в сессии")
 
     # ── Sport / League filter ─────────────────
     SPORT_FILTER_OPTIONS = ["Все", "⚽ Только Football", "🏈 Только NFL", "🏀 Только NBA"]

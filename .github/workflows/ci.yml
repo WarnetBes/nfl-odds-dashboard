@@ -43,6 +43,12 @@ jobs:
           fi
 
       - name: Run tests
+        env:
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          GMAIL_SENDER: ${{ secrets.GMAIL_SENDER }}
+          GMAIL_PASSWORD: ${{ secrets.GMAIL_PASSWORD }}
+          GMAIL_TO: ${{ secrets.GMAIL_TO }}
+          GSHEET_URL: ${{ secrets.GSHEET_URL }}
         run: |
           python -m pytest tests/ -v \
             --tb=short \
