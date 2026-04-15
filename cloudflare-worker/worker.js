@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════
-//  Sports Odds Dashboard — Cloudflare Worker v2
+//  Sports Odds Dashboard — Cloudflare Worker v3 (fixed)
 //  • Хостит PWA статику (manifest, sw.js, offline, иконки)
 //  • Проксирует всё остальное на Streamlit Cloud
 //  • Инжектирует PWA meta-теги в HTML-ответы Streamlit
@@ -7,6 +7,9 @@
 // ═══════════════════════════════════════════════════════════
 
 const STREAMLIT_URL = "https://nfl-odds-dashboard-cwetbvdeqon6p5ujc7hz6u.streamlit.app";
+
+// ── FIX 1: Таймаут для проксирования — Streamlit может долго отвечать ──
+const PROXY_TIMEOUT_MS = 25_000;
 
 const MANIFEST = JSON.stringify({
   name: "Sports Odds Dashboard",
@@ -37,9 +40,10 @@ const MANIFEST = JSON.stringify({
   ]
 });
 
+// ── FIX 2: try/catch для парсинга push-данных внутри SW ──
 const SW_JS = `
-const CACHE = 'odds-v2';
-const STATIC = 'odds-static-v2';
+const CACHE = 'odds-v3';
+const STATIC = 'odds-static-v3';
 
 self.addEventListener('install', e => {
   e.waitUntil(
@@ -76,25 +80,31 @@ self.addEventListener('fetch', e => {
     return;
   }
 
-  // Network-first for app
+  // Network-first for app pages
   e.respondWith(
     fetch(e.request)
-      .then(r => { if (r.ok) { const c = r.clone(); caches.open(CACHE).then(cache => cache.put(e.request, c)); } return r; })
+      .then(r => {
+        if (r.ok) { const c = r.clone(); caches.open(CACHE).then(cache => cache.put(e.request, c)); }
+        return r;
+      })
       .catch(() => caches.match(e.request).then(cached => cached || caches.match('/offline.html')))
   );
 });
 
 self.addEventListener('push', e => {
   if (!e.data) return;
-  const d = e.data.json();
+  let d;
+  try { d = e.data.json(); } catch { d = { title: '🎯 Value Bet Alert', body: e.data.text() }; }
   e.waitUntil(self.registration.showNotification(d.title || '🎯 Value Bet Alert', {
     body: d.body || 'Новая ставка с положительным EV!',
     icon: '/icons/icon-192x192.png',
     badge: '/icons/icon-72x72.png',
-    tag: 'odds-alert', renotify: true,
+    tag: 'odds-alert',
+    renotify: true,
     data: { url: d.url || '/' }
   }));
 });
+
 self.addEventListener('notificationclick', e => {
   e.notification.close();
   e.waitUntil(clients.openWindow(e.notification.data.url || '/'));
@@ -139,50 +149,29 @@ const OFFLINE_HTML = `<!DOCTYPE html>
 </body>
 </html>`;
 
+// ── FIX 3: фильтруем hop-by-hop заголовки при проксировании ────────────────
+const HOP_BY_HOP = new Set([
+  'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization',
+  'te', 'trailers', 'transfer-encoding', 'upgrade', 'host',
+]);
+
 const CORS = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, OPTIONS",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type",
 };
 
-export default {
-  async fetch(request) {
-    const url  = new URL(request.url);
-    const path = url.pathname;
+function proxyRequestHeaders(original) {
+  const headers = new Headers();
+  for (const [k, v] of original.entries()) {
+    if (!HOP_BY_HOP.has(k.toLowerCase())) headers.set(k, v);
+  }
+  headers.set('host', new URL(STREAMLIT_URL).host);
+  return headers;
+}
 
-    if (request.method === "OPTIONS")
-      return new Response(null, { status: 204, headers: CORS });
-
-    // ── PWA static assets ──────────────────────────────────
-    if (path === "/manifest.json")
-      return new Response(MANIFEST, {
-        headers: { "Content-Type": "application/manifest+json; charset=utf-8",
-                   "Cache-Control": "public, max-age=86400", ...CORS }
-      });
-
-    if (path === "/sw.js")
-      return new Response(SW_JS, {
-        headers: { "Content-Type": "application/javascript; charset=utf-8",
-                   "Service-Worker-Allowed": "/",
-                   "Cache-Control": "public, max-age=3600, must-revalidate", ...CORS }
-      });
-
-    if (path === "/offline.html")
-      return new Response(OFFLINE_HTML, {
-        headers: { "Content-Type": "text/html; charset=utf-8",
-                   "Cache-Control": "public, max-age=86400", ...CORS }
-      });
-
-    // ── Proxy to Streamlit ────────────────────────────────
-    try {
-      const target = new URL(path + url.search, STREAMLIT_URL);
-      const resp = await fetch(new Request(target.toString(), {
-        method:  request.method,
-        headers: request.headers,
-      }));
-
-      if (resp.headers.get("content-type")?.includes("text/html")) {
-        const html = await resp.text();
-        const pwa  = `
+// ── PWA-сниппет вынесен в константу ─────────────────────────────────────────
+const PWA_SNIPPET = `
   <link rel="manifest" href="/manifest.json" />
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
@@ -192,25 +181,110 @@ export default {
   <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
   <script>
     if ('serviceWorker' in navigator)
-      navigator.serviceWorker.register('/sw.js', {scope: '/'})
-        .then(r => console.log('[PWA] SW:', r.scope))
+      navigator.serviceWorker.register('/sw.js', { scope: '/' })
+        .then(r => console.log('[PWA] SW registered:', r.scope))
         .catch(e => console.warn('[PWA] SW error:', e));
     window.addEventListener('beforeinstallprompt', e => {
       e.preventDefault();
       window._pwaPrompt = e;
     });
   <\/script>`;
-        const patched    = html.replace("</head>", pwa + "\n  </head>");
+
+export default {
+  async fetch(request, env, ctx) {
+    const url  = new URL(request.url);
+    const path = url.pathname;
+
+    // ── OPTIONS preflight ─────────────────────────────────────────────────────
+    if (request.method === "OPTIONS")
+      return new Response(null, { status: 204, headers: CORS });
+
+    // ── PWA static assets ─────────────────────────────────────────────────────
+    if (path === "/manifest.json")
+      return new Response(MANIFEST, {
+        headers: {
+          "Content-Type": "application/manifest+json; charset=utf-8",
+          "Cache-Control": "public, max-age=86400",
+          ...CORS
+        }
+      });
+
+    if (path === "/sw.js")
+      return new Response(SW_JS, {
+        headers: {
+          "Content-Type": "application/javascript; charset=utf-8",
+          "Service-Worker-Allowed": "/",
+          // FIX 4: sw.js не должен кешироваться — иначе обновления не применяются
+          "Cache-Control": "no-cache, no-store, must-revalidate",
+          ...CORS
+        }
+      });
+
+    if (path === "/offline.html")
+      return new Response(OFFLINE_HTML, {
+        headers: {
+          "Content-Type": "text/html; charset=utf-8",
+          "Cache-Control": "public, max-age=86400",
+          ...CORS
+        }
+      });
+
+    // ── Proxy to Streamlit ────────────────────────────────────────────────────
+    try {
+      const target = new URL(path + url.search, STREAMLIT_URL);
+
+      // FIX 5: AbortController + таймаут
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), PROXY_TIMEOUT_MS);
+
+      let resp;
+      try {
+        resp = await fetch(new Request(target.toString(), {
+          method:  request.method,
+          headers: proxyRequestHeaders(request.headers),
+          // FIX 6: пробрасываем body для POST (нужно для Streamlit WebSocket handshake)
+          body:    ["GET", "HEAD"].includes(request.method) ? undefined : request.body,
+          signal:  controller.signal,
+          redirect: "follow",
+        }));
+      } finally {
+        clearTimeout(timer);
+      }
+
+      const contentType = resp.headers.get("content-type") ?? "";
+
+      if (contentType.includes("text/html")) {
+        const html    = await resp.text();
+        // FIX 7: fallback если </head> отсутствует в ответе
+        const patched = html.includes("</head>")
+          ? html.replace("</head>", PWA_SNIPPET + "\n  </head>")
+          : html + PWA_SNIPPET;
+
         const newHeaders = new Headers(resp.headers);
+        newHeaders.set("Content-Type", "text/html; charset=utf-8");
         newHeaders.delete("Content-Security-Policy");
+
         return new Response(patched, { status: resp.status, headers: newHeaders });
       }
-      return resp;
-    } catch (err) {
-      return new Response(OFFLINE_HTML, {
-        status: 503,
-        headers: { "Content-Type": "text/html; charset=utf-8" }
+
+      // FIX 8: все не-HTML ответы пробрасываем напрямую через body stream
+      return new Response(resp.body, {
+        status:  resp.status,
+        headers: resp.headers,
       });
+
+    } catch (err) {
+      // FIX 9: различаем таймаут (504) и недоступность сервиса (503)
+      const isTimeout = err.name === "AbortError";
+      const status    = isTimeout ? 504 : 503;
+      const message   = isTimeout
+        ? "Streamlit не ответил вовремя. Попробуйте ещё раз."
+        : "Сервис временно недоступен.";
+
+      return new Response(
+        OFFLINE_HTML.replace("Нет подключения к интернету.", message),
+        { status, headers: { "Content-Type": "text/html; charset=utf-8" } }
+      );
     }
   }
 };
