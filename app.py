@@ -1345,7 +1345,7 @@ with st.sidebar:
 
     # ── Тема ────────────────────────────────
     _theme_cols = st.columns(2)
-        render_user_badge()  # 👤 User info + logout
+    render_user_badge()  # 👤 User info + logout
     with _theme_cols[0]:
         _dark_btn  = st.button("🌑 Тёмная",  use_container_width=True,
                                type="primary" if st.session_state.theme=="dark"  else "secondary",
