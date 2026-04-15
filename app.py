@@ -422,75 +422,165 @@ hr { border-color: #1e3a5f !important; margin: 1rem 0 !important; }
 # ─────────────────────────────────────────────
 LIGHT_CSS = """
 <style>
-/* ── LIGHT THEME OVERRIDES ─────────────────────── */
-html, body, [class*="css"] {
+/* ── LIGHT THEME — CSS VARIABLES ───────────────────── */
+:root {
+  --card-bg:       #ffffff;
+  --card-bg2:      #f1f5f9;
+  --card-border:   #cbd5e1;
+  --text-primary:  #1e293b;
+  --text-secondary:#475569;
+  --text-muted:    #64748b;
+  --surface:       #f8fafc;
+  --surface2:      #f1f5f9;
+}
+
+html, body, [class*="css"],
+[data-testid="stAppViewContainer"],
+[data-testid="stMain"],
+.stApp, .main {
     background-color: #f8fafc !important;
     color: #1e293b !important;
 }
-.block-container {
-    background-color: #f8fafc !important;
+.block-container { background-color: #f8fafc !important; }
+
+/* All text everywhere */
+p, span, div, label, li, h1, h2, h3, h4, h5, h6,
+[data-testid="stMarkdownContainer"],
+[data-testid="stMarkdownContainer"] p,
+[data-testid="stMarkdownContainer"] span {
+    color: #1e293b !important;
 }
+
 /* Sidebar */
-[data-testid="stSidebar"] {
+[data-testid="stSidebar"],
+[data-testid="stSidebar"] > div {
     background: linear-gradient(180deg, #f1f5f9 0%, #e2e8f0 100%) !important;
     border-right: 1px solid #cbd5e1 !important;
 }
-[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] h2 {
-    color: #7c3aed !important;
-}
+[data-testid="stSidebar"] * { color: #1e293b !important; }
+[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] h2 { color: #7c3aed !important; }
+
 /* Metric cards */
 [data-testid="stMetric"] {
     background: linear-gradient(135deg, #ffffff, #f1f5f9) !important;
     border: 1px solid #cbd5e1 !important;
 }
-[data-testid="stMetric"]:hover { border-color: #7c3aed !important; }
-[data-testid="stMetricValue"] { color: #1e293b !important; }
-[data-testid="stMetricLabel"] { color: #64748b !important; }
+[data-testid="stMetric"]:hover  { border-color: #7c3aed !important; }
+[data-testid="stMetricValue"]   { color: #1e293b !important; }
+[data-testid="stMetricLabel"]   { color: #64748b !important; }
+[data-testid="stMetricDelta"]   { color: #16a34a !important; }
+
 /* Tabs */
 [data-testid="stTabs"] [data-baseweb="tab-list"] {
     background: #f1f5f9 !important;
     border: 1px solid #cbd5e1 !important;
 }
-[data-testid="stTabs"] [role="tab"] { color: #475569 !important; }
+[data-testid="stTabs"] [role="tab"]                              { color: #475569 !important; }
 [data-testid="stTabs"] [role="tab"]:hover:not([aria-selected="true"]) {
-    background: #e2e8f0 !important;
-    color: #1e293b !important;
+    background: #e2e8f0 !important; color: #1e293b !important;
 }
-/* Inputs */
+
+/* Inputs / selects */
+[data-testid="stTextInput"] > div,
 [data-testid="stTextInput"] > div > input,
+[data-testid="stNumberInput"] > div,
 [data-testid="stNumberInput"] > div > input,
-[data-testid="stSelectbox"] > div > div {
+[data-testid="stSelectbox"] > div > div,
+[data-testid="stMultiSelect"] > div,
+[data-testid="stRadio"] {
     background: #ffffff !important;
-    border: 1px solid #cbd5e1 !important;
+    border-color: #cbd5e1 !important;
     color: #1e293b !important;
 }
-/* DataFrames */
-[data-testid="stDataFrame"] {
-    border: 1px solid #cbd5e1 !important;
-}
-/* Score cards */
+input, select, textarea { color: #1e293b !important; background: #fff !important; }
+
+/* DataFrame */
+[data-testid="stDataFrame"] { border: 1px solid #cbd5e1 !important; }
+[data-testid="stDataFrame"] * { color: #1e293b !important; }
+
+/* Score / bet cards — CSS class overrides */
 .score-card {
     background: linear-gradient(135deg, #f1f5f9 0%, #ffffff 100%) !important;
-    border-color: #cbd5e1 !important;
+    border-color: #cbd5e1 !important; color: #1e293b !important;
 }
-.team-name { color: #1e293b !important; }
+.team-name  { color: #1e293b !important; }
 .team-score { color: #2563eb !important; }
+.status-fin { color: #64748b !important; }
+.status-pre { color: #2563eb !important; }
+.bet-card * { color: #1e293b !important; }
+
+/* ── INLINE BET/SIGNAL CARDS (hardcoded backgrounds) ──────────── */
+/* Override dark card backgrounds injected via st.markdown */
+[data-testid="stMarkdownContainer"] > div > div[style*="background:#1e293b"],
+[data-testid="stMarkdownContainer"] > div > div[style*="background:#1a1a2e"],
+[data-testid="stMarkdownContainer"] > div > div[style*="background:#0d2a1a"],
+[data-testid="stMarkdownContainer"] > div > div[style*="background:#2a1a00"],
+[data-testid="stMarkdownContainer"] > div > div[style*="background:#0d1b2a"],
+[data-testid="stMarkdownContainer"] > div > div[style*="background:#111827"],
+[data-testid="stMarkdownContainer"] > div > div[style*="background:#0f172a"],
+[data-testid="stMarkdownContainer"] > div > div[style*="background:#0f1f33"] {
+    background: #ffffff !important;
+    border-color: #cbd5e1 !important;
+    color: #1e293b !important;
+}
+[data-testid="stMarkdownContainer"] div[style*="color:#94a3b8"],
+[data-testid="stMarkdownContainer"] div[style*="color:#64748b"],
+[data-testid="stMarkdownContainer"] span[style*="color:#94a3b8"],
+[data-testid="stMarkdownContainer"] span[style*="color:#64748b"] {
+    color: #475569 !important;
+}
+[data-testid="stMarkdownContainer"] div[style*="color:#e2e8f0"],
+[data-testid="stMarkdownContainer"] span[style*="color:#e2e8f0"] {
+    color: #1e293b !important;
+}
+/* Sub-cell cards in signals */
+[data-testid="stMarkdownContainer"] div[style*="border-radius:8px"] {
+    background: #f1f5f9 !important;
+    color: #1e293b !important;
+}
+[data-testid="stMarkdownContainer"] div[style*="border-radius:8px"] div {
+    color: #1e293b !important;
+}
+/* Progress bars in cards */
+[data-testid="stMarkdownContainer"] div[style*="background:#0f172a"] {
+    background: #e2e8f0 !important;
+}
+
 /* Expander */
 [data-testid="stExpander"] {
     background: #f1f5f9 !important;
     border: 1px solid #cbd5e1 !important;
 }
-/* Divider */
-hr { border-color: #e2e8f0 !important; }
+[data-testid="stExpander"] * { color: #1e293b !important; }
+
 /* Alert */
-[data-testid="stAlert"] { background: #eff6ff !important; }
-/* Scrollbar */
+[data-testid="stAlert"]   { background: #eff6ff !important; color: #1e3a8a !important; }
+[data-testid="stAlert"] * { color: #1e3a8a !important; }
+
+/* Divider + scrollbar */
+hr { border-color: #e2e8f0 !important; }
 ::-webkit-scrollbar-track { background: #f1f5f9 !important; }
 ::-webkit-scrollbar-thumb { background: #cbd5e1 !important; }
-/* Main title adapts */
-.subtitle { color: #475569 !important; }
-/* Timer bar */
-.timer-bar { background: #f1f5f9 !important; border-color: #cbd5e1 !important; color: #475569 !important; }
+
+/* Timer bar + subtitle */
+.subtitle   { color: #475569 !important; }
+.timer-bar  { background: #f1f5f9 !important; border-color: #cbd5e1 !important; color: #475569 !important; }
+.value-badge { background: linear-gradient(135deg,#d1fae5,#a7f3d0) !important; color: #065f46 !important; }
+.live-dot   { box-shadow: 0 0 8px #16a34a !important; }
+
+/* Toggle + checkbox */
+[data-testid="stToggle"] * { color: #1e293b !important; }
+
+/* Caption / small text */
+[data-testid="stCaptionContainer"] * { color: #64748b !important; }
+
+/* Select dropdown open */
+[data-baseweb="popover"] [role="option"] {
+    background: #ffffff !important; color: #1e293b !important;
+}
+[data-baseweb="popover"] [role="option"]:hover {
+    background: #f1f5f9 !important;
+}
 </style>
 """
 
@@ -1125,8 +1215,35 @@ with st.sidebar:
 #  THEME APPLICATION + PWA INJECTION
 # ─────────────────────────────────────────────
 _current_theme = st.session_state.get("theme", "dark")
-if _current_theme == "light":
+_is_light = (_current_theme == "light")
+if _is_light:
     st.markdown(LIGHT_CSS, unsafe_allow_html=True)
+
+# ── Theme-aware palette for inline HTML cards ─────────────────
+# All inline st.markdown cards use these vars so they flip with the theme
+T = {
+    "bg":         "#ffffff"  if _is_light else "#1e293b",
+    "bg2":        "#f1f5f9"  if _is_light else "#0d1b2a",
+    "bg_dark":    "#e2e8f0"  if _is_light else "#0f172a",
+    "border":     "#cbd5e1"  if _is_light else "#334155",
+    "text":       "#1e293b"  if _is_light else "#e2e8f0",
+    "text2":      "#475569"  if _is_light else "#94a3b8",
+    "muted":      "#64748b"  if _is_light else "#64748b",
+    # Signal card backgrounds
+    "sharp_bg":   "#f3e8ff"  if _is_light else "#1a1a2e",
+    "strong_bg":  "#dcfce7"  if _is_light else "#0d2a1a",
+    "moderate_bg":"#fef9c3"  if _is_light else "#2a1a00",
+    "weak_bg":    "#dbeafe"  if _is_light else "#0d1b2a",
+    "none_bg":    "#f8fafc"  if _is_light else "#111827",
+    "none_text":  "#64748b"  if _is_light else "#94a3b8",
+    # Kelly cell
+    "kelly_bg":   "#ede9fe"  if _is_light else "#2d1f5e",
+    "kelly_brd":  "border:1px solid #7c3aed;",
+    "kelly_text": "#5b21b6"  if _is_light else "#c4b5fd",
+    # Arb card
+    "arb_bg":     "#f0fdf4"  if _is_light else "#0a2a1a",
+    "arb_brd":    "#16a34a"  if _is_light else "#22c55e",
+}
 
 # PWA meta-теги + SW регистрация (через Streamlit в body, браузер подхватывает)
 st.markdown("""
@@ -1332,10 +1449,197 @@ DARK = dict(plot_bgcolor="#0d1b2a", paper_bgcolor="#0d1b2a", font_color="#e2e8f0
 
 # ── TAB 0: BETTING SIGNALS v2 (Sharp EV + Kelly ¼ Stake) ─────────────────
 with tab_signals:
-    st.markdown("#### 🎯 На кого ставить — Sharp EV сигналы (Pinnacle reference + Kelly ¼)")
-    if market_key != "h2h":
-        st.info("ℹ️ Сигналы работают только для рынка **H2H / 1X2**.")
-    else:
+    st.markdown("#### 🎯 На кого ставить — Sharp EV сигналы + Spreads/Totals анализ")
+
+    if market_key == "spreads":
+        # ── SPREADS СИГНАЛЫ: лучший спред и наименьшая маржа по каждому матчу
+        st.markdown("**📊 Spreads — анализ линий и маржи**")
+        spread_signals = []
+        for match, grp in df.groupby("Матч"):
+            home_t = grp["Хозяева"].iloc[0]
+            away_t = grp["Гости"].iloc[0]
+            time_s = grp["Время"].iloc[0]
+            rows = []
+            for _, r in grp.iterrows():
+                try:
+                    h_price = float(r["Odds Хозяева (Am)"])
+                    a_price = float(r["Odds Гости (Am)"])
+                    h_dec = american_to_decimal(h_price)
+                    a_dec = american_to_decimal(a_price)
+                    h_pt  = float(r.get("Спред Хозяева", 0) or 0)
+                    a_pt  = float(r.get("Спред Гости", 0) or 0)
+                    # No-vig implied probs
+                    h_impl = decimal_to_implied(h_dec)
+                    a_impl = decimal_to_implied(a_dec)
+                    nv     = no_vig_prob([h_impl, a_impl])
+                    # EV edge vs -110 standard (-110 = 52.38% impl)
+                    h_ev = round(nv[0]/100 * h_dec - 1, 4)
+                    a_ev = round(nv[1]/100 * a_dec - 1, 4)
+                    # Total margin (vig) = sum of implied - 100
+                    margin = round(h_impl + a_impl - 100, 2)
+                    rows.append({
+                        "Букмекер": r["Букмекер"],
+                        "h_dec": h_dec, "a_dec": a_dec,
+                        "h_pt": h_pt,   "a_pt": a_pt,
+                        "h_ev": h_ev,   "a_ev": a_ev,
+                        "margin": margin,
+                        "h_nv": nv[0],  "a_nv": nv[1],
+                    })
+                except Exception:
+                    continue
+            if not rows:
+                continue
+            # Find best spread (lowest margin + highest EV)
+            best = min(rows, key=lambda x: x["margin"])
+            # Best EV side
+            if best["h_ev"] >= best["a_ev"]:
+                rec_team, rec_odds, rec_pt, rec_ev, rec_nv = home_t, fmt_am(round((best["h_dec"]-1)*100)), best["h_pt"], best["h_ev"], best["h_nv"]
+            else:
+                rec_team, rec_odds, rec_pt, rec_ev, rec_nv = away_t, fmt_am(round((best["a_dec"]-1)*100)), best["a_pt"], best["a_ev"], best["a_nv"]
+            signal_str = "🟢 ПОЛОЖИТЕЛЬНЫЙ" if rec_ev > 0 else ("🟡 НЕЙТРАЛЬНЫЙ" if rec_ev > -0.01 else "🔴 ОТРИЦАТЕЛЬНЫЙ")
+            ev_c = ("#16a34a" if _is_light else "#4ade80") if rec_ev > 0 else ("#ca8a04" if _is_light else "#fde68a") if rec_ev > -0.01 else ("#dc2626" if _is_light else "#f87171")
+            spread_signals.append({
+                "Матч": match, "Время": time_s,
+                "Сигнал": signal_str,
+                "Ставить на": f"{rec_team} ({rec_pt:+.1f})",
+                "Оддс (Am)": rec_odds,
+                "EV Edge": f"{rec_ev*100:+.2f}%",
+                "No-Vig %": f"{rec_nv:.1f}%",
+                "Маржа (vig)": f"{best['margin']:+.2f}%",
+                "Лучший БМ": best["Букмекер"],
+                "_ev": rec_ev, "_ev_c": ev_c,
+            })
+        if spread_signals:
+            for ss in sorted(spread_signals, key=lambda x: -x["_ev"]):
+                ev_c = ss["_ev_c"]
+                card_c = T["strong_bg"] if ss["_ev"] > 0 else T["moderate_bg"] if ss["_ev"] > -0.01 else T["none_bg"]
+                brd_c  = ("#16a34a" if _is_light else "#4ade80") if ss["_ev"] > 0 else ("#ca8a04" if _is_light else "#fde68a") if ss["_ev"] > -0.01 else T["border"]
+                st.markdown(f"""
+<div style="background:{card_c};border:2px solid {brd_c};border-radius:12px;padding:14px 18px;margin-bottom:10px">
+  <div style="font-size:11px;color:{T['text2']}">{ss['Матч']} &middot; {ss['Время']}</div>
+  <div style="font-size:18px;font-weight:800;color:{ev_c};margin:4px 0">{ss['Сигнал']} — {ss['Ставить на']}</div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:6px;margin-top:8px">
+    <div style="background:{T['bg2']};border-radius:8px;padding:6px 10px">
+      <div style="font-size:10px;color:{T['muted']}">🏦 Оддс</div>
+      <div style="font-size:14px;font-weight:700;color:{ev_c}">{ss['Оддс (Am)']}</div>
+    </div>
+    <div style="background:{T['bg2']};border-radius:8px;padding:6px 10px">
+      <div style="font-size:10px;color:{T['muted']}">💰 EV Edge</div>
+      <div style="font-size:14px;font-weight:700;color:{ev_c}">{ss['EV Edge']}</div>
+    </div>
+    <div style="background:{T['bg2']};border-radius:8px;padding:6px 10px">
+      <div style="font-size:10px;color:{T['muted']}">📉 No-Vig %</div>
+      <div style="font-size:14px;font-weight:700;color:{T['text']}">{ss['No-Vig %']}</div>
+    </div>
+    <div style="background:{T['bg2']};border-radius:8px;padding:6px 10px">
+      <div style="font-size:10px;color:{T['muted']}">📊 Маржа (vig)</div>
+      <div style="font-size:14px;font-weight:700;color:{T['text']}">{ss['Маржа (vig)']}</div>
+    </div>
+    <div style="background:{T['bg2']};border-radius:8px;padding:6px 10px">
+      <div style="font-size:10px;color:{T['muted']}">🏦 Лучший БМ</div>
+      <div style="font-size:14px;font-weight:700;color:{T['text']}">{ss['Лучший БМ']}</div>
+    </div>
+  </div>
+</div>""", unsafe_allow_html=True)
+        else:
+            st.warning("Недостаточно данных для Spreads-сигналов.")
+
+    elif market_key == "totals":
+        # ── TOTALS СИГНАЛЫ: Over/Under анализ с No-Vig EV
+        st.markdown("**📏 Totals — Over/Under анализ линий**")
+        total_signals = []
+        for match, grp in df.groupby("Матч"):
+            time_s = grp["Время"].iloc[0]
+            rows_t = []
+            for _, r in grp.iterrows():
+                try:
+                    ov_am = float(r["Odds Over (Am)"])
+                    un_am = float(r["Odds Under (Am)"])
+                    line  = float(r.get("Тотал Линия", 0) or 0)
+                    ov_d  = american_to_decimal(ov_am)
+                    un_d  = american_to_decimal(un_am)
+                    ov_i  = decimal_to_implied(ov_d)
+                    un_i  = decimal_to_implied(un_d)
+                    nv    = no_vig_prob([ov_i, un_i])
+                    ov_ev = round(nv[0]/100 * ov_d - 1, 4)
+                    un_ev = round(nv[1]/100 * un_d - 1, 4)
+                    margin = round(ov_i + un_i - 100, 2)
+                    # Line dispersion across books (higher = softer line)
+                    rows_t.append({
+                        "Букмекер": r["Букмекер"],
+                        "line": line,
+                        "ov_d": ov_d, "un_d": un_d,
+                        "ov_ev": ov_ev, "un_ev": un_ev,
+                        "margin": margin,
+                        "ov_nv": nv[0], "un_nv": nv[1],
+                        "ov_am": fmt_am(ov_am), "un_am": fmt_am(un_am),
+                    })
+                except Exception:
+                    continue
+            if not rows_t:
+                continue
+            best_t = min(rows_t, key=lambda x: x["margin"])
+            # Line movement: min vs max line across books
+            all_lines = [r["line"] for r in rows_t if r["line"]]
+            line_range = f"{min(all_lines):.1f}–{max(all_lines):.1f}" if len(set(all_lines)) > 1 else f"{best_t['line']:.1f}"
+            if best_t["ov_ev"] >= best_t["un_ev"]:
+                rec = "OVER"; rec_odds = best_t["ov_am"]; rec_ev = best_t["ov_ev"]; rec_nv = best_t["ov_nv"]
+            else:
+                rec = "UNDER"; rec_odds = best_t["un_am"]; rec_ev = best_t["un_ev"]; rec_nv = best_t["un_nv"]
+            signal_str = "🟢 ТОТАЛ" if rec_ev > 0 else "🔴 ОТРИЦАТЕЛЬНЫЙ"
+            ev_c = ("#16a34a" if _is_light else "#4ade80") if rec_ev > 0 else ("#dc2626" if _is_light else "#f87171")
+            total_signals.append({
+                "Матч": match, "Время": time_s,
+                "Сигнал": signal_str,
+                "Ставить": f"{rec} {best_t['line']:.1f}",
+                "Оддс (Am)": rec_odds,
+                "EV Edge": f"{rec_ev*100:+.2f}%",
+                "No-Vig %": f"{rec_nv:.1f}%",
+                "Маржа": f"{best_t['margin']:+.2f}%",
+                "Линия": line_range,
+                "Лучший БМ": best_t["Букмекер"],
+                "_ev": rec_ev, "_ev_c": ev_c,
+            })
+        if total_signals:
+            for ts in sorted(total_signals, key=lambda x: -x["_ev"]):
+                ev_c  = ts["_ev_c"]
+                card_c = T["strong_bg"] if ts["_ev"] > 0 else T["none_bg"]
+                brd_c  = ("#16a34a" if _is_light else "#22c55e") if ts["_ev"] > 0 else T["border"]
+                st.markdown(f"""
+<div style="background:{card_c};border:2px solid {brd_c};border-radius:12px;padding:14px 18px;margin-bottom:10px">
+  <div style="font-size:11px;color:{T['text2']}">{ts['Матч']} &middot; {ts['Время']}</div>
+  <div style="font-size:18px;font-weight:800;color:{ev_c};margin:4px 0">{ts['Сигнал']} — {ts['Ставить']}</div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:6px;margin-top:8px">
+    <div style="background:{T['bg2']};border-radius:8px;padding:6px 10px">
+      <div style="font-size:10px;color:{T['muted']}">🏦 Оддс</div>
+      <div style="font-size:14px;font-weight:700;color:{ev_c}">{ts['Оддс (Am)']}</div>
+    </div>
+    <div style="background:{T['bg2']};border-radius:8px;padding:6px 10px">
+      <div style="font-size:10px;color:{T['muted']}">💰 EV Edge</div>
+      <div style="font-size:14px;font-weight:700;color:{ev_c}">{ts['EV Edge']}</div>
+    </div>
+    <div style="background:{T['bg2']};border-radius:8px;padding:6px 10px">
+      <div style="font-size:10px;color:{T['muted']}">📉 No-Vig %</div>
+      <div style="font-size:14px;font-weight:700;color:{T['text']}">{ts['No-Vig %']}</div>
+    </div>
+    <div style="background:{T['bg2']};border-radius:8px;padding:6px 10px">
+      <div style="font-size:10px;color:{T['muted']}">📊 Маржа</div>
+      <div style="font-size:14px;font-weight:700;color:{T['text']}">{ts['Маржа']}</div>
+    </div>
+    <div style="background:{T['bg2']};border-radius:8px;padding:6px 10px">
+      <div style="font-size:10px;color:{T['muted']}">📍 Линия</div>
+      <div style="font-size:14px;font-weight:700;color:{T['text']}">{ts['Линия']}</div>
+    </div>
+    <div style="background:{T['bg2']};border-radius:8px;padding:6px 10px">
+      <div style="font-size:10px;color:{T['muted']}">🏦 Лучший БМ</div>
+      <div style="font-size:14px;font-weight:700;color:{T['text']}">{ts['Лучший БМ']}</div>
+    </div>
+  </div>
+</div>""", unsafe_allow_html=True)
+        else:
+            st.warning("Недостаточно данных для Totals-сигналов.")
+
+    else:  # h2h
         sdf = _build_betting_signals_v2(df, has_draw, sport_cfg["key"])
         if sdf.empty:
             st.warning("Недостаточно данных для генерации сигналов. Загрузи коэффициенты сначала.")
@@ -1348,7 +1652,7 @@ with tab_signals:
   <span style="background:#065f46;color:#4ade80;padding:4px 12px;border-radius:20px;font-weight:700">🟢 СИЛЬНЫЙ (&ge;70 conf)</span>
   <span style="background:#713f12;color:#fde68a;padding:4px 12px;border-radius:20px;font-weight:700">🟡 УМЕРЕННЫЙ (&ge;40 conf)</span>
   <span style="background:#1e3a5f;color:#93c5fd;padding:4px 12px;border-radius:20px;font-weight:700">🔵 СЛАБЫЙ (EV&gt;0)</span>
-  <span style="background:#1e293b;color:#94a3b8;padding:4px 12px;border-radius:20px">⚪ НЕТ</span>
+  <span style="background:var(--surface2,#1e293b);color:#64748b;padding:4px 12px;border-radius:20px">⚪ НЕТ</span>
 </div>""",
                 unsafe_allow_html=True,
             )
@@ -1360,15 +1664,15 @@ with tab_signals:
                 is_sharp   = str(sig.get("Sharp Reference", "")).startswith("⚡")
 
                 if is_sharp:
-                    card_bg, border, text_clr = "#1a1a2e", "#a78bfa", "#a78bfa"
+                    card_bg, border, text_clr = T["sharp_bg"],    "#a78bfa", "#7c3aed" if _is_light else "#a78bfa"
                 elif conf >= 70:
-                    card_bg, border, text_clr = "#0d2a1a", "#4ade80", "#4ade80"
+                    card_bg, border, text_clr = T["strong_bg"],   "#16a34a" if _is_light else "#4ade80", "#166534" if _is_light else "#4ade80"
                 elif conf >= 40:
-                    card_bg, border, text_clr = "#2a1a00", "#fde68a", "#fde68a"
+                    card_bg, border, text_clr = T["moderate_bg"], "#ca8a04" if _is_light else "#fde68a", "#78350f" if _is_light else "#fde68a"
                 elif edge_val > 0:
-                    card_bg, border, text_clr = "#0d1b2a", "#93c5fd", "#93c5fd"
+                    card_bg, border, text_clr = T["weak_bg"],     "#3b82f6", "#1d4ed8" if _is_light else "#93c5fd"
                 else:
-                    card_bg, border, text_clr = "#111827", "#475569", "#94a3b8"
+                    card_bg, border, text_clr = T["none_bg"],     T["border"], T["none_text"]
 
                 kelly_pct_str = str(sig.get("Kelly ¼ %", "0.00%"))
                 try:
@@ -1383,57 +1687,57 @@ with tab_signals:
                     'padding:2px 8px;font-size:11px;margin-left:8px">⚡ Sharp EV</span>'
                 ) if is_sharp else ""
 
-                kelly_cell_bg  = "#2d1f5e" if kelly_dollar > 0 else "#1e293b"
-                kelly_cell_brd = "border:1px solid #7c3aed;" if kelly_dollar > 0 else ""
-                kelly_color    = "#c4b5fd" if kelly_dollar > 0 else "#475569"
-                ev_color       = "#4ade80" if edge_val > 0 else "#f87171"
-                ref_color      = "#a78bfa" if is_sharp else "#94a3b8"
+                kelly_cell_bg  = T["kelly_bg"]   if kelly_dollar > 0 else T["bg"]
+                kelly_cell_brd = T["kelly_brd"]  if kelly_dollar > 0 else ""
+                kelly_color    = T["kelly_text"] if kelly_dollar > 0 else T["muted"]
+                ev_color       = ("#16a34a" if _is_light else "#4ade80") if edge_val > 0 else ("#dc2626" if _is_light else "#f87171")
+                ref_color      = "#7c3aed" if (is_sharp and _is_light) else ("#a78bfa" if is_sharp else T["text2"])
 
                 st.markdown(f"""
 <div style="background:{card_bg};border:2px solid {border};border-radius:12px;padding:16px 20px;margin-bottom:14px">
   <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
     <div>
-      <div style="font-size:11px;color:#94a3b8;margin-bottom:2px">{sig["Матч"]} &middot; {sig["Время"]}{sharp_badge}</div>
+      <div style="font-size:11px;color:{T["text2"]};margin-bottom:2px">{sig["Матч"]} &middot; {sig["Время"]}{sharp_badge}</div>
       <div style="font-size:20px;font-weight:800;color:{text_clr}">{signal_str} — СТАВИТЬ: {sig["На кого ставить"]}</div>
     </div>
     <div style="text-align:right">
       <div style="font-size:22px;font-weight:900;color:{text_clr}">{sig["Odds (Am)"]}</div>
-      <div style="font-size:12px;color:#94a3b8">{sig["Odds (Dec)"]:.2f} децимал</div>
+      <div style="font-size:12px;color:{T["text2"]}">{sig["Odds (Dec)"]:.2f} децимал</div>
     </div>
   </div>
   <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin-top:12px">
-    <div style="background:#1e293b;border-radius:8px;padding:8px 12px">
-      <div style="font-size:10px;color:#64748b">🏦 Лучший букмекер</div>
-      <div style="font-size:14px;font-weight:700;color:#e2e8f0">{sig["Лучший букмекер"]}</div>
+    <div style="background:{T["bg2"]};border-radius:8px;padding:8px 12px">
+      <div style="font-size:10px;color:{T["muted"]}">🏦 Лучший букмекер</div>
+      <div style="font-size:14px;font-weight:700;color:{T["text"]}">{sig["Лучший букмекер"]}</div>
     </div>
-    <div style="background:#1e293b;border-radius:8px;padding:8px 12px">
-      <div style="font-size:10px;color:#64748b">💰 EV Edge</div>
+    <div style="background:{T["bg2"]};border-radius:8px;padding:8px 12px">
+      <div style="font-size:10px;color:{T["muted"]}">💰 EV Edge</div>
       <div style="font-size:14px;font-weight:700;color:{ev_color}">{sig["EV Edge %"]}</div>
     </div>
-    <div style="background:#1e293b;border-radius:8px;padding:8px 12px">
-      <div style="font-size:10px;color:#64748b">📉 No-Vig Fair</div>
-      <div style="font-size:14px;font-weight:700;color:#e2e8f0">{sig["No-Vig Fair %"]}</div>
+    <div style="background:{T["bg2"]};border-radius:8px;padding:8px 12px">
+      <div style="font-size:10px;color:{T["muted"]}">📉 No-Vig Fair</div>
+      <div style="font-size:14px;font-weight:700;color:{T["text"]}">{sig["No-Vig Fair %"]}</div>
     </div>
-    <div style="background:#1e293b;border-radius:8px;padding:8px 12px">
-      <div style="font-size:10px;color:#64748b">🤝 Консенсус</div>
-      <div style="font-size:14px;font-weight:700;color:#e2e8f0">{sig["Консенсус книг"]}</div>
+    <div style="background:{T["bg2"]};border-radius:8px;padding:8px 12px">
+      <div style="font-size:10px;color:{T["muted"]}">🤝 Консенсус</div>
+      <div style="font-size:14px;font-weight:700;color:{T["text"]}">{sig["Консенсус книг"]}</div>
     </div>
     <div style="background:{kelly_cell_bg};{kelly_cell_brd}border-radius:8px;padding:8px 12px">
-      <div style="font-size:10px;color:#64748b">📈 Kelly ¼ Ставка</div>
-      <div style="font-size:14px;font-weight:700;color:{kelly_color}">${kelly_dollar:.2f} <span style="font-size:11px;color:#64748b">({kelly_pct_str})</span></div>
+      <div style="font-size:10px;color:{T[\"muted\"]}">📈 Kelly ¼ Ставка</div>
+      <div style="font-size:14px;font-weight:700;color:{kelly_color}">${kelly_dollar:.2f} <span style="font-size:11px;color:{T["muted"]}">({kelly_pct_str})</span></div>
     </div>
-    <div style="background:#1e293b;border-radius:8px;padding:8px 12px">
-      <div style="font-size:10px;color:#64748b">📊 Референс</div>
+    <div style="background:{T["bg2"]};border-radius:8px;padding:8px 12px">
+      <div style="font-size:10px;color:{T["muted"]}">📊 Референс</div>
       <div style="font-size:14px;font-weight:700;color:{ref_color}">{sig.get("Sharp Reference", "Консенсус")}</div>
     </div>
   </div>
   <div style="margin-top:10px">
-    <div style="font-size:10px;color:#64748b;margin-bottom:4px">Уверенность сигнала: {conf}/100</div>
-    <div style="background:#0f172a;border-radius:4px;height:8px;overflow:hidden">
+    <div style="font-size:10px;color:{T["muted"]};margin-bottom:4px">Уверенность сигнала: {conf}/100</div>
+    <div style="background:{T["bg_dark"]};border-radius:4px;height:8px;overflow:hidden">
       <div style="background:{border};height:8px;width:{conf}%;border-radius:4px;transition:width .4s"></div>
     </div>
   </div>
-  {'<div style="font-size:11px;color:#64748b;margin-top:8px">🔄 ' + str(sig["Другие исходы"]) + '</div>' if sig["Другие исходы"] else ''}
+  {'<div style="font-size:11px;color:' + T["muted"] + ';margin-top:8px">🔄 ' + str(sig["Другие исходы"]) + '</div>' if sig["Другие исходы"] else ''}
 </div>""", unsafe_allow_html=True)
 
             # Bar chart
