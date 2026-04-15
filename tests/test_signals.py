@@ -132,13 +132,14 @@ class TestSignalsBestOutcome:
         assert best == "Y", f"Ожидали 'Y' (аутсайдер с лучшим EV), получили '{best}'"
 
     def test_consistent_home_pick(self):
-        """Если Home явно выгоднее — выбираем Home."""
-        # Все книги: Home -105 (почти ивент), Away -115
-        # No-vig Home ≈ 52.1%, Dec Home ≈ 1.952 → EV ≈ +1.6%
-        # No-vig Away ≈ 47.9%, Dec Away ≈ 1.870 → EV ≈ -10%
+        """Если Home явно выгоднее — выбираем Home.
+
+        С cross-book EV: Pinnacle -200 Home (fair ≈66.7%), Away +170 (fair ≈33.3%)
+        DK Home -110: dec=1.9091, EV = 0.667 × 1.9091 − 1 = +27.2% → Home!
+        """
         rows = [
-            make_h2h_row("A vs B", "A", "B", "Book1", -105, -115),
-            make_h2h_row("A vs B", "A", "B", "Book2", -105, -115),
+            make_h2h_row("A vs B", "A", "B", "Pinnacle", -200, 170),
+            make_h2h_row("A vs B", "A", "B", "DraftKings", -110, 100),
         ]
         df = pd.DataFrame(rows)
         result = build_betting_signals(df, has_draw=False)
