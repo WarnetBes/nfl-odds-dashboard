@@ -367,7 +367,7 @@ def _run_stauth_gate() -> None:
 
     try:
         authenticator = init_authenticator()
-        name, authentication_status, username = authenticator.login(
+        authenticator.login(
             location="main",
             fields={
                 "Form name": "🏆 Sports Odds Dashboard",
@@ -376,6 +376,10 @@ def _run_stauth_gate() -> None:
                 "Login": "🚀 Войти",
             },
         )
+        # stauth 0.4.x stores results in session_state, not return value
+        name = st.session_state.get("name")
+        authentication_status = st.session_state.get("authentication_status")
+        username = st.session_state.get("username")
 
         if authentication_status is True:
             plan = get_user_plan(username)
