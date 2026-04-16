@@ -746,7 +746,138 @@ def fetch_scores_from_url(url: str, session=None) -> list:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  10. TEST HELPERS
+#  10. HISTORICAL ODDS
+# ─────────────────────────────────────────────────────────────────────────────
+
+ODDS_BASE = "https://api.the-odds-api.com/v4"
+
+
+def fetch_historical_odds(
+    api_key: str,
+    sport_key: str,
+    regions: str,
+    market_key: str,
+    date_iso: str,
+    session=None,
+) -> tuple:
+    """Fetch historical odds snapshot from The Odds API.
+
+    Parameters
+    ----------
+    api_key : str
+        The Odds API key.
+    sport_key : str
+        Sport key, e.g. ``"americanfootball_nfl"``.
+    regions : str
+        Comma-separated region codes, e.g. ``"us,eu"``.
+    market_key : str
+        Market type: ``"h2h"``, ``"spreads"``, or ``"totals"``.
+    date_iso : str
+        ISO-8601 timestamp for the snapshot, e.g. ``"2024-01-15T12:00:00Z"``.
+    session : requests-like, optional
+        Injectable HTTP session (for testing).
+
+    Returns
+    -------
+    tuple
+        ``(data_list | None, timestamp | None)`` where *data_list* is the
+        list of event dicts and *timestamp* is the snapshot timestamp string
+        returned by the API (or ``None`` on error).
+    """
+    import requests as _requests
+    _session = session if session is not None else _requests
+
+    try:
+        r = _session.get(
+            f"{ODDS_BASE}/historical/sports/{sport_key}/odds",
+            params=dict(
+                apiKey=api_key,
+                regions=regions,
+                markets=market_key,
+                oddsFormat="american",
+                dateFormat="iso",
+                date=date_iso,
+            ),
+            timeout=15,
+        )
+        if r.status_code == 200:
+            body = r.json()
+            return body.get("data", []), body.get("timestamp", date_iso)
+        return None, None
+    except Exception:
+        return None, None
+
+
+def parse_historical_to_df(events: list, market_key: str, has_draw: bool) -> pd.DataFrame:
+    """Convert historical odds events into a flat DataFrame.
+
+    The schema intentionally mirrors ``parse_to_df`` in *app.py* so that
+    existing display helpers and value-bet logic can be reused.
+
+    Parameters
+    ----------
+    events : list
+        List of event dicts from :func:`fetch_historical_odds`.
+    market_key : str
+        ``"h2h"``, ``"spreads"``, or ``"totals"``.
+    has_draw : bool
+        Whether a draw outcome is expected (e.g. soccer leagues).
+
+    Returns
+    -------
+    pd.DataFrame
+    """
+    rows: list[dict] = []
+    for ev in events:
+        home = ev.get("home_team", "")
+        away = ev.get("away_team", "")
+        commence = ev.get("commence_time", "")
+        for bm in ev.get("bookmakers", []):
+            for mkt in bm.get("markets", []):
+                if mkt["key"] != market_key:
+                    continue
+                oc = {o["name"]: o for o in mkt["outcomes"]}
+                base = {
+                    "Матч": f"{away} @ {home}",
+                    "Время": commence,
+                    "Букмекер": bm.get("title", bm["key"]),
+                    "Хозяева": home,
+                    "Гости": away,
+                    "_event_id": ev.get("id", ""),
+                }
+                if market_key == "h2h":
+                    row = {
+                        **base,
+                        "Odds Хозяева (Am)": oc.get(home, {}).get("price"),
+                        "Odds Гости (Am)": oc.get(away, {}).get("price"),
+                        "Odds Ничья (Am)": oc.get("Draw", {}).get("price") if has_draw else None,
+                    }
+                elif market_key == "spreads":
+                    ho, ao = oc.get(home, {}), oc.get(away, {})
+                    row = {
+                        **base,
+                        "Спред Хозяева": ho.get("point"),
+                        "Odds Хозяева (Am)": ho.get("price"),
+                        "Спред Гости": ao.get("point"),
+                        "Odds Гости (Am)": ao.get("price"),
+                    }
+                elif market_key == "totals":
+                    ov = next((o for o in mkt["outcomes"] if o["name"] == "Over"), {})
+                    un = next((o for o in mkt["outcomes"] if o["name"] == "Under"), {})
+                    row = {
+                        **base,
+                        "Тотал Линия": ov.get("point"),
+                        "Odds Over (Am)": ov.get("price"),
+                        "Odds Under (Am)": un.get("price"),
+                    }
+                else:
+                    continue
+                rows.append(row)
+    return pd.DataFrame(rows)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  11. TEST HELPERS
 # ─────────────────────────────────────────────────────────────────────────────
 
 def make_h2h_row(match, home, away, bm, h_am, a_am,
