@@ -2804,7 +2804,14 @@ with tab_hist_odds:
 
     if _ho_fetch:
         if not api_key:
-            st.warning("⚠️ Введи API ключ в боковой панели. Исторические данные недоступны в демо-режиме.")
+            st.info("💡 Демо-режим (API ключ не введён). Получи бесплатно: [the-odds-api.com](https://the-odds-api.com)", icon="ℹ️")
+            _ho_demo_events = make_demo(_ho_sport_cfg["key"], _ho_has_draw)
+            if _ho_demo_events:
+                st.session_state["hist_odds_events"] = _ho_demo_events
+                st.session_state["hist_odds_ts"] = f"{_ho_date} (демо)"
+                st.session_state["hist_odds_mk"] = _ho_market_key
+                st.session_state["hist_odds_draw"] = _ho_has_draw
+                st.session_state["hist_odds_sport_label"] = _ho_sport_label
         else:
             with st.spinner(f"Загружаю {_ho_sport_label} · {_ho_market_label} на {_ho_date}…"):
                 _ho_events, _ho_ts = fetch_historical_odds(
