@@ -1,0 +1,17 @@
+# NFL Odds Dashboard — Cursor Rules
+
+## Стек
+- Python 3.11, Streamlit
+- Основные файлы: app.py, utils.py, auth.py
+- Тесты: /tests (pytest)
+
+## ⚠️ БЕЗОПАСНОСТЬ
+- Файл .streamlit/secrets.toml НИКОГДА не читай, не создавай, не упоминай содержимое
+- Секреты доступны через st.secrets[] или os.environ[] — только так
+- Для новых API вызовов всегда добавляй try/except и fallback на mock-данные
+- Тесты пиши без зависимости от реальных API ключей (используй unittest.mock)
+
+## Стиль кода
+- PEP8, type hints обязательны
+- Docstrings для всех функций в utils.py
+- Новые зависимости добавляй в requirements.txt
