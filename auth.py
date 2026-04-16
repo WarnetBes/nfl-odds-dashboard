@@ -1,57 +1,26 @@
 """Authentication & Paywall module for NFL Odds Dashboard.
 
 Provides:
-- Streamlit-authenticator integration with Google Sheets as user database
-- Login/logout with cookie-based sessions
+- Login/logout with simple user database
 - Free/Pro/Sharp subscription tiers
 - Tab/feature access control
 - Row limit enforcement for Free tier
 - User badge rendering in sidebar
-- User registration with bcrypt password hashing
 """
-
-from __future__ import annotations
-
-import logging
-from datetime import datetime, date
-from typing import Dict, List, Literal, Optional, Tuple
-
-import bcrypt
 import streamlit as st
-
-try:
-    import gspread
-    from google.oauth2.service_account import Credentials as SACredentials
-    GSPREAD_OK = True
-except ImportError:
-    GSPREAD_OK = False
-
-try:
-    import streamlit_authenticator as stauth
-    STAUTH_OK = True
-except ImportError:
-    STAUTH_OK = False
-
-logger = logging.getLogger(__name__)
-
-# ── GOOGLE SHEETS CONFIG ─────────────────────────────────────────────
-GSHEETS_SCOPES: List[str] = [
-    "https://spreadsheets.google.com/feeds",
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive",
-]
-
-SHEET_COLUMNS: List[str] = [
-    "username", "name", "email", "password_hash",
-    "plan", "paid_until", "telegram_id", "created_at",
-]
+import hashlib
+import hmac
+import os
+import secrets as _secrets_mod
+from datetime import datetime
+from typing import Literal, Dict, List
 
 # ── SUBSCRIPTION PLANS ────────────────────────────────────────────────
-PLAN_CONFIG: Dict[str, dict] = {
+PLAN_CONFIG = {
     "free": {
         "name": "Free",
         "icon": "🆓",
-        "sports": ["🏈 NFL"],
+        "sports": ["🏈 NFL"],  # Only NFL for free
         "row_limit": 5,
         "locked_tabs": [
             "💎 Value Bets",
@@ -65,8 +34,8 @@ PLAN_CONFIG: Dict[str, dict] = {
     "pro": {
         "name": "Pro",
         "icon": "⭐",
-        "sports": "all",
-        "row_limit": None,
+        "sports": "all",  # All 10 leagues
+        "row_limit": None,  # Unlimited
         "locked_tabs": [],
     },
     "sharp": {
@@ -79,431 +48,114 @@ PLAN_CONFIG: Dict[str, dict] = {
     },
 }
 
-# ── MOCK / FALLBACK USER DATABASE ────────────────────────────────────
-_MOCK_USERS_DB: Dict[str, dict] = {
+# ── USER DATABASE (in production: use database or st.secrets) ─────────
+
+# --- Salted password hashing (PBKDF2-HMAC-SHA256) ---
+_HASH_ALGO      = "sha256"
+_HASH_ITERATIONS = 260_000  # OWASP 2023 recommendation for PBKDF2-SHA256
+
+def _hash_password(password: str, salt: bytes | None = None) -> str:
+    """Hash *password* with a random salt using PBKDF2-HMAC-SHA256.
+
+    Returns ``salt_hex:hash_hex`` so the salt is stored alongside the hash.
+    If *salt* is ``None`` a new 16-byte random salt is generated.
+    """
+    if salt is None:
+        salt = _secrets_mod.token_bytes(16)
+    dk = hashlib.pbkdf2_hmac(_HASH_ALGO, password.encode(), salt, _HASH_ITERATIONS)
+    return salt.hex() + ":" + dk.hex()
+
+def _verify_password(password: str, stored: str) -> bool:
+    """Constant-time verification of *password* against a ``salt:hash`` string."""
+    try:
+        salt_hex, hash_hex = stored.split(":", 1)
+        salt = bytes.fromhex(salt_hex)
+        dk = hashlib.pbkdf2_hmac(_HASH_ALGO, password.encode(), salt, _HASH_ITERATIONS)
+        return hmac.compare_digest(dk.hex(), hash_hex)
+    except (ValueError, AttributeError):
+        return False
+
+# Pre-computed salted hashes for demo accounts.
+# In production these should come from a database or st.secrets.
+USERS_DB = {
     "demo": {
-        "email": "demo@example.com",
-        "name": "Demo User",
-        "password": bcrypt.hashpw("demo123".encode(), bcrypt.gensalt()).decode(),
+        "password_hash": _hash_password("demo123", salt=b"demo_fixed_salt!"),
         "plan": "free",
-        "paid_until": "2099-12-31",
+        "name": "Demo User",
+        "expires": "2099-12-31",
     },
     "pro_user": {
-        "email": "pro@example.com",
-        "name": "Pro User",
-        "password": bcrypt.hashpw("pro456".encode(), bcrypt.gensalt()).decode(),
+        "password_hash": _hash_password("pro456", salt=b"pro__fixed_salt!"),
         "plan": "pro",
-        "paid_until": "2026-12-31",
+        "name": "Pro User",
+        "expires": "2026-12-31",
     },
 }
 
-
-# ── GOOGLE SHEETS CLIENT ─────────────────────────────────────────────
-def get_sheets_client() -> gspread.Client:
-    """Authenticate via ``st.secrets["gcp_service_account"]`` and return a
-    ``gspread.Client``.
-
-    Returns:
-        An authorised gspread client.
-
-    Raises:
-        RuntimeError: If gspread is not installed or authentication fails.
-    """
-    if not GSPREAD_OK:
-        raise RuntimeError("gspread не установлен")
-
-    try:
-        sa_info = dict(st.secrets["gcp_service_account"])
-        creds = SACredentials.from_service_account_info(sa_info, scopes=GSHEETS_SCOPES)
-        client = gspread.authorize(creds)
-        return client
-    except KeyError:
-        raise RuntimeError("Секрет gcp_service_account не найден в st.secrets")
-    except Exception as exc:
-        raise RuntimeError(f"Ошибка авторизации GSheets: {exc}") from exc
-
-
-# ── LOAD USERS FROM SHEETS ───────────────────────────────────────────
-def load_users_from_sheets() -> Dict[str, dict]:
-    """Load all users from Google Sheets and return a dict compatible with
-    ``streamlit-authenticator``.
-
-    The sheet is located at ``st.secrets["GSHEET_USERS_URL"]`` with columns::
-
-        username | name | email | password_hash | plan | paid_until | telegram_id | created_at
-
-    Returns:
-        A dict keyed by username::
-
-            {
-                "username": {
-                    "email": str,
-                    "name": str,
-                    "password": str,   # bcrypt hash
-                    "plan": str,
-                    "paid_until": str,
-                },
-                ...
-            }
-
-        Falls back to ``_MOCK_USERS_DB`` if Sheets is unavailable.
-    """
-    try:
-        client = get_sheets_client()
-        url = st.secrets["GSHEET_USERS_URL"]
-        spreadsheet = client.open_by_url(url)
-        worksheet = spreadsheet.sheet1
-        records = worksheet.get_all_records()
-
-        users: Dict[str, dict] = {}
-        for row in records:
-            uname = str(row.get("username", "")).strip()
-            if not uname:
-                continue
-            users[uname] = {
-                "email": str(row.get("email", "")),
-                "name": str(row.get("name", uname)),
-                "password": str(row.get("password_hash", "")),
-                "plan": str(row.get("plan", "free")).lower(),
-                "paid_until": str(row.get("paid_until", "")),
-            }
-
-        if users:
-            return users
-
-        logger.warning("Google Sheets пуст — используем mock-данные")
-        return _MOCK_USERS_DB
-
-    except Exception as exc:
-        logger.error("Не удалось загрузить пользователей из Sheets: %s", exc)
-        try:
-            st.error(f"⚠️ Ошибка загрузки пользователей из Sheets: {exc}. Используем демо-данные.")
-        except Exception:
-            pass
-        return _MOCK_USERS_DB
-
-
-# ── AUTHENTICATOR ────────────────────────────────────────────────────
-def init_authenticator() -> "stauth.Authenticate":
-    """Create and return a ``streamlit_authenticator.Authenticate`` instance.
-
-    - Loads users from Google Sheets (falls back to mock data).
-    - Cookie name: ``"sports_arb_dashboard"``.
-    - Cookie key from ``st.secrets["COOKIE_SECRET"]``.
-    - Cookie expiry: 30 days.
-
-    Returns:
-        A configured ``stauth.Authenticate`` object.
-
-    Raises:
-        RuntimeError: If ``streamlit-authenticator`` is not installed.
-    """
-    if not STAUTH_OK:
-        raise RuntimeError("streamlit-authenticator не установлен")
-
-    users = load_users_from_sheets()
-
-    credentials = {
-        "usernames": {
-            uname: {
-                "email": data["email"],
-                "name": data["name"],
-                "password": data["password"],
-            }
-            for uname, data in users.items()
-        }
-    }
-
-    try:
-        cookie_key = st.secrets["COOKIE_SECRET"]
-    except KeyError:
-        cookie_key = "sports_arb_dashboard_default_key_change_me"
-        logger.warning("COOKIE_SECRET не найден в st.secrets — используем дефолтный ключ")
-
-    authenticator = stauth.Authenticate(
-        credentials=credentials,
-        cookie_name="sports_arb_dashboard",
-        cookie_key=cookie_key,
-        cookie_expiry_days=30,
-    )
-
-    # Store the full user data (including plan/paid_until) in session state
-    if "_auth_users_data" not in st.session_state:
-        st.session_state["_auth_users_data"] = users
-
-    return authenticator
-
-
-# ── USER PLAN ────────────────────────────────────────────────────────
-def get_user_plan(username: str) -> str:
-    """Return the subscription plan for *username*.
-
-    Checks ``paid_until`` — if the date has passed, returns ``"free"``
-    regardless of the stored plan value.
-
-    Args:
-        username: The username to look up.
-
-    Returns:
-        ``"pro"``, ``"sharp"``, or ``"free"``.
-    """
-    try:
-        users = st.session_state.get("_auth_users_data")
-        if not users:
-            users = load_users_from_sheets()
-
-        user = users.get(username)
-        if not user:
-            return "free"
-
-        plan = user.get("plan", "free").lower()
-        paid_until = user.get("paid_until", "")
-
-        if not paid_until:
-            return plan
-
-        try:
-            expiry = datetime.strptime(paid_until, "%Y-%m-%d").date()
-            if expiry < date.today():
-                return "free"
-        except ValueError:
-            logger.warning("Некорректная дата paid_until='%s' для %s", paid_until, username)
-            return plan
-
-        return plan
-
-    except Exception as exc:
-        logger.error("Ошибка get_user_plan(%s): %s", username, exc)
-        return "free"
-
-
-# ── REGISTER USER ────────────────────────────────────────────────────
-def register_user(
-    username: str,
-    name: str,
-    email: str,
-    password: str,
-) -> bool:
-    """Register a new user by appending a row to Google Sheets.
-
-    The password is hashed with ``bcrypt`` before storage.
-
-    Args:
-        username: Unique login name.
-        name: Display name.
-        email: User email address.
-        password: Plain-text password (will be hashed).
-
-    Returns:
-        ``True`` on success, ``False`` if the username already exists or an
-        error occurs.
-    """
-    try:
-        client = get_sheets_client()
-        url = st.secrets["GSHEET_USERS_URL"]
-        spreadsheet = client.open_by_url(url)
-        worksheet = spreadsheet.sheet1
-
-        # Check for duplicate username
-        existing = worksheet.get_all_records()
-        for row in existing:
-            if str(row.get("username", "")).strip().lower() == username.strip().lower():
-                logger.warning("Регистрация: username '%s' уже существует", username)
-                return False
-
-        # Hash password with bcrypt
-        password_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
-
-        new_row = [
-            username.strip(),
-            name.strip(),
-            email.strip(),
-            password_hash,
-            "free",                                     # plan
-            "",                                         # paid_until
-            "",                                         # telegram_id
-            datetime.now().strftime("%Y-%m-%d %H:%M"),  # created_at
-        ]
-
-        worksheet.append_row(new_row, value_input_option="USER_ENTERED")
-
-        # Invalidate cached users so next load picks up the new user
-        if "_auth_users_data" in st.session_state:
-            del st.session_state["_auth_users_data"]
-
-        return True
-
-    except Exception as exc:
-        logger.error("Ошибка регистрации пользователя '%s': %s", username, exc)
-        try:
-            st.error(f"⚠️ Ошибка регистрации: {exc}")
-        except Exception:
-            pass
-        return False
-
-
-# ── AUTHENTICATION GATE (backward-compatible) ────────────────────────
-def run_auth_gate() -> None:
-    """Main auth gate — call ONCE at the top of ``app.py`` after
-    ``st.set_page_config()``.
-
-    If ``streamlit-authenticator`` is available, uses cookie-based auth.
-    Otherwise, falls back to the built-in simple login form.
-    """
+# ── AUTHENTICATION ────────────────────────────────────────────────────
+def run_auth_gate():
+    """Main auth gate - call this ONCE at the top of app.py after st.set_page_config()."""
     if "auth_user" not in st.session_state:
         st.session_state.auth_user = None
         st.session_state.auth_plan = "free"
+    
+    if st.session_state.auth_user is None:
+        _show_login_form()
+        st.stop()
 
-    if STAUTH_OK:
-        _run_stauth_gate()
-    else:
-        _run_simple_gate()
-
-
-def _run_stauth_gate() -> None:
-    """Auth gate using ``streamlit-authenticator``."""
-    if st.session_state.auth_user is not None:
-        return
-
-    try:
-        authenticator = init_authenticator()
-        authenticator.login(
-            location="main",
-            fields={
-                "Form name": "🏆 Sports Odds Dashboard",
-                "Username": "👤 Username",
-                "Password": "🔑 Password",
-                "Login": "🚀 Войти",
-            },
-        )
-        # stauth 0.4.x stores results in session_state, not return value
-        name = st.session_state.get("name")
-        authentication_status = st.session_state.get("authentication_status")
-        username = st.session_state.get("username")
-
-        if authentication_status is True:
-            plan = get_user_plan(username)
-            st.session_state.auth_user = username
-            st.session_state.auth_plan = plan
-            st.session_state.auth_name = name
-            st.session_state["_authenticator"] = authenticator
-            st.rerun()
-        elif authentication_status is False:
-            st.error("❌ Неверный логин или пароль")
-            _show_demo_credentials()
-            st.stop()
-        else:
-            _show_demo_credentials()
-            st.stop()
-    except Exception as exc:
-        logger.error("Ошибка streamlit-authenticator: %s", exc)
-        st.warning("⚠️ Ошибка аутентификации — используем простую форму входа.")
-        _run_simple_gate()
-
-
-def _run_simple_gate() -> None:
-    """Fallback auth gate using a simple ``st.form``."""
-    if st.session_state.auth_user is not None:
-        return
-
-    _show_login_form()
-    st.stop()
-
-
-def _show_login_form() -> None:
-    """Render the built-in simple login form (fallback mode)."""
-    st.markdown(
-        """<div style='text-align:center; padding:2rem 0;'>
+def _show_login_form():
+    """Renders login form and handles authentication."""
+    st.markdown("""<div style='text-align:center; padding:2rem 0;'>
         <h1 style='font-size:2.5rem;'>🏆 Sports Odds Dashboard</h1>
         <p style='color:#64748b; font-size:1.1rem;'>Войди чтобы продолжить</p>
-        </div>""",
-        unsafe_allow_html=True,
-    )
-
-    users = load_users_from_sheets()
-
+    </div>""", unsafe_allow_html=True)
+    
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         with st.form("login_form", clear_on_submit=False):
             username = st.text_input("👤 Username", placeholder="demo")
             password = st.text_input("🔑 Password", type="password", placeholder="demo123")
             submit = st.form_submit_button("🚀 Войти", use_container_width=True, type="primary")
-
+            
             if submit:
-                if username in users:
-                    user_data = users[username]
-                    stored_hash = user_data.get("password", "")
-                    # Support both bcrypt and legacy SHA-256 hashes
-                    if stored_hash.startswith("$2"):
-                        pw_ok = bcrypt.checkpw(password.encode(), stored_hash.encode())
-                    else:
-                        import hashlib
-                        pw_ok = hashlib.sha256(password.encode()).hexdigest() == stored_hash
-
-                    if pw_ok:
-                        paid_until = user_data.get("paid_until", "2099-12-31")
-                        try:
-                            exp = datetime.strptime(paid_until, "%Y-%m-%d")
-                            if exp < datetime.now():
-                                st.error("❌ Подписка истекла")
-                                return
-                        except ValueError:
-                            pass
-
-                        plan = get_user_plan(username)
-                        st.session_state.auth_user = username
-                        st.session_state.auth_plan = plan
-                        st.session_state.auth_name = user_data.get("name", username)
-                        st.rerun()
+                if username in USERS_DB:
+                    user_data = USERS_DB[username]
+                    if _verify_password(password, user_data["password_hash"]):
+                        # Check expiration
+                        exp = datetime.strptime(user_data["expires"], "%Y-%m-%d")
+                        if exp < datetime.now():
+                            st.error("❌ Подписка истекла")
+                        else:
+                            st.session_state.auth_user = username
+                            st.session_state.auth_plan = user_data["plan"]
+                            st.session_state.auth_name = user_data["name"]
+                            st.rerun()
                     else:
                         st.error("❌ Неверный пароль")
                 else:
                     st.error("❌ Пользователь не найден")
-
+        
         st.divider()
-        _show_demo_credentials()
+        st.markdown("""<div style='text-align:center;'>
+            <p style='color:#64748b; font-size:0.85rem;'>Демо доступ:</p>
+            <p><strong>demo</strong> / <strong>demo123</strong> (Free)<br>
+            <strong>pro_user</strong> / <strong>pro456</strong> (Pro)</p>
+        </div>""", unsafe_allow_html=True)
 
-
-def _show_demo_credentials() -> None:
-    """Display demo login credentials below the form."""
-    st.markdown(
-        """<div style='text-align:center;'>
-        <p style='color:#64748b; font-size:0.85rem;'>Демо доступ:</p>
-        <p><strong>demo</strong> / <strong>demo123</strong> (Free)<br>
-        <strong>pro_user</strong> / <strong>pro456</strong> (Pro)</p>
-        </div>""",
-        unsafe_allow_html=True,
-    )
-
-
-# ── LOGOUT ───────────────────────────────────────────────────────────
-def logout() -> None:
-    """Log out the current user and reset session state."""
-    authenticator = st.session_state.get("_authenticator")
-    if authenticator is not None:
-        try:
-            authenticator.logout(location="unrendered")
-        except Exception:
-            pass
-
+def logout():
+    """Logout current user."""
     st.session_state.auth_user = None
     st.session_state.auth_plan = "free"
-    st.session_state.pop("auth_name", None)
-    st.session_state.pop("_authenticator", None)
-    st.session_state.pop("_auth_users_data", None)
     st.rerun()
 
-
-# ── SIDEBAR BADGE ────────────────────────────────────────────────────
-def render_user_badge() -> None:
-    """Render user info badge in the sidebar with a logout button."""
+def render_user_badge():
+    """Renders user info badge in sidebar with logout button."""
     if st.session_state.auth_user:
         plan = st.session_state.auth_plan
-        cfg = PLAN_CONFIG.get(plan, PLAN_CONFIG["free"])
+        cfg = PLAN_CONFIG[plan]
         name = st.session_state.get("auth_name", st.session_state.auth_user)
-
-        st.markdown(
-            f"""<div style='background:#1e293b; padding:12px; border-radius:10px;
+        
+        st.markdown(f"""<div style='background:#1e293b; padding:12px; border-radius:10px; 
             border:1px solid #334155; margin-bottom:1rem;'>
             <div style='display:flex; justify-content:space-between; align-items:center;'>
                 <div>
@@ -515,68 +167,38 @@ def render_user_badge() -> None:
                     <div style='font-size:0.75rem; color:#a78bfa; font-weight:600;'>{cfg["name"]}</div>
                 </div>
             </div>
-        </div>""",
-            unsafe_allow_html=True,
-        )
-
+        </div>""", unsafe_allow_html=True)
+        
         if st.button("🚪 Выйти", key="logout_btn", use_container_width=True, type="secondary"):
             logout()
 
-
 # ── ACCESS CONTROL ───────────────────────────────────────────────────
 def is_tab_locked(tab_name: str) -> bool:
-    """Return ``True`` if *tab_name* is locked for the current user's plan.
-
-    Args:
-        tab_name: Display name of the tab (e.g. ``"💎 Value Bets"``).
-
-    Returns:
-        Whether the tab is locked.
-    """
+    """Returns True if tab is locked for current user's plan."""
     plan = st.session_state.get("auth_plan", "free")
-    locked: List[str] = PLAN_CONFIG.get(plan, PLAN_CONFIG["free"])["locked_tabs"]
+    locked = PLAN_CONFIG[plan]["locked_tabs"]
     return tab_name in locked
 
-
-def get_available_sports() -> List[str] | str:
-    """Return the list of sports available for the current plan.
-
-    Returns:
-        ``"all"`` for Pro/Sharp plans, or a list of sport labels for Free.
-    """
+def get_available_sports() -> List[str]:
+    """Returns list of sports available for current plan."""
     plan = st.session_state.get("auth_plan", "free")
-    sports = PLAN_CONFIG.get(plan, PLAN_CONFIG["free"])["sports"]
+    sports = PLAN_CONFIG[plan]["sports"]
     if sports == "all":
         return "all"
     return sports
 
-
-def apply_rows_limit(df, limit_override: Optional[int] = None):
-    """Apply a row limit to *df* for Free-plan users.
-
-    Args:
-        df: A pandas DataFrame to truncate.
-        limit_override: Optional explicit row limit (overrides plan default).
-
-    Returns:
-        The (possibly truncated) DataFrame.
-    """
+def apply_rows_limit(df, limit_override=None):
+    """Applies row limit to dataframe for Free plan."""
     plan = st.session_state.get("auth_plan", "free")
-    limit = limit_override if limit_override is not None else PLAN_CONFIG.get(plan, PLAN_CONFIG["free"])["row_limit"]
-
+    limit = limit_override if limit_override is not None else PLAN_CONFIG[plan]["row_limit"]
+    
     if limit is None:
         return df
     return df.head(limit)
 
-
-def render_upgrade_banner(tab_name: str) -> None:
-    """Render an upgrade banner for locked tabs.
-
-    Args:
-        tab_name: Display name of the locked tab.
-    """
-    st.markdown(
-        f"""<div style='background: linear-gradient(135deg, #7c3aed, #2563eb);
+def render_upgrade_banner(tab_name: str):
+    """Renders upgrade banner for locked tabs."""
+    st.markdown(f"""<div style='background: linear-gradient(135deg, #7c3aed, #2563eb); 
         padding:2rem; border-radius:16px; text-align:center; margin:2rem 0;'>
         <h2 style='color:white; margin:0;'>🔒 {tab_name} — Pro функция</h2>
         <p style='color:#e2e8f0; font-size:1.1rem; margin:1rem 0;'>
@@ -597,23 +219,13 @@ def render_upgrade_banner(tab_name: str) -> None:
         <p style='color:#e2e8f0; font-size:0.85rem; margin-top:1.5rem;'>
             ℹ️ Свяжись с нами для подключения: <strong>support@yourdomain.com</strong>
         </p>
-    </div>""",
-        unsafe_allow_html=True,
-    )
+    </div>""", unsafe_allow_html=True)
 
-
-def render_rows_limit_banner(total_rows: int) -> None:
-    """Render a banner when the row limit is applied.
-
-    Args:
-        total_rows: Total number of rows in the untruncated data.
-    """
+def render_rows_limit_banner(total_rows: int):
+    """Renders banner when row limit is applied."""
     plan = st.session_state.get("auth_plan", "free")
-    limit = PLAN_CONFIG.get(plan, PLAN_CONFIG["free"])["row_limit"]
-
+    limit = PLAN_CONFIG[plan]["row_limit"]
+    
     if limit and total_rows > limit:
-        st.warning(
-            f"🔒 **Free план** показывает только {limit} из {total_rows} строк. "
-            f"Обновись до **Pro** для полного доступа.",
-            icon="⚠️",
-        )
+        st.warning(f"🔒 **Free план** показывает только {limit} из {total_rows} строк. "
+                   f"Обновись до **Pro** для полного доступа.", icon="⚠️")
