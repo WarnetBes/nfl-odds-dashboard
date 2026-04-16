@@ -2919,7 +2919,7 @@ with tab_hist_odds:
             st.download_button(
                 "⬇️ Скачать CSV",
                 _ho_display[display_cols].to_csv(index=False).encode(),
-                f"historical_odds_{_ho_date}.csv",
+                f"historical_odds_{_ho_ts_stored}.csv",
                 mime="text/csv",
                 key="hist_odds_csv_btn",
             )
