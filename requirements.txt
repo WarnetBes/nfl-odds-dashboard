@@ -7,3 +7,9 @@ gspread>=6.1.2
 google-auth>=2.29.0
 openai>=1.0.0
 reportlab>=4.0.0
+
+# Auth & Payments
+bcrypt>=4.1.2
+httpx>=0.27.0
+PyYAML>=6.0.1
+streamlit-authenticator>=0.3.3
