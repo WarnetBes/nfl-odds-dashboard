@@ -40,6 +40,8 @@ from utils import (
     sport_ev_threshold,
     sharp_books_in_group,
     SPORT_EV_THRESHOLDS,
+    fetch_historical_odds,
+    parse_historical_to_df,
 )
 
 # ── Импорт auth модуля ──────────────────────
@@ -1920,13 +1922,14 @@ st.divider()
 # ─────────────────────────────────────────────
 #  TABS
 # ─────────────────────────────────────────────
-tab_signals, tab_arb, tab_table, tab_chart, tab_value, tab_live, tab_history, tab_bankroll, tab_ai = st.tabs([
+tab_signals, tab_arb, tab_table, tab_chart, tab_value, tab_live, tab_hist_odds, tab_history, tab_bankroll, tab_ai = st.tabs([
     "🎯 Сигналы",
     "⚡ Арбитраж",
     "📋 Коэффициенты",
     "📊 Сравнение букмекеров",
     "💎 Value Bets",
     "📺 Live Scores",
+    "📈 Исторические коэфф.",
     "📊 История ставок",
     "💰 Статистика банкролла",
     "🤖 AI Анализ",
@@ -2762,7 +2765,179 @@ with tab_live:
     if st.session_state.auto_refresh:
         st.markdown('<meta http-equiv="refresh" content="60">', unsafe_allow_html=True)
 
-# ── TAB 6: HISTORY (Google Sheets) ────────────────────
+# ── TAB 6: HISTORICAL ODDS ─────────────────────────────
+with tab_hist_odds:
+    st.markdown("#### 📈 Исторические коэффициенты — снимок odds на выбранную дату")
+
+    _ho_col1, _ho_col2, _ho_col3 = st.columns([1, 1, 1])
+    with _ho_col1:
+        _ho_date = st.date_input(
+            "📅 Дата снимка",
+            value=datetime(2024, 12, 1),
+            min_value=datetime(2020, 6, 1),
+            max_value=datetime.now(),
+            key="hist_odds_date",
+        )
+    with _ho_col2:
+        _ho_sport_label = st.selectbox(
+            "🏟️ Лига",
+            list(SPORTS_CATALOGUE.keys()),
+            index=0,
+            key="hist_odds_sport",
+        )
+    with _ho_col3:
+        _ho_market_labels = SPORTS_CATALOGUE[_ho_sport_label]["markets"]
+        _ho_market_label = st.selectbox(
+            "📊 Рынок",
+            _ho_market_labels,
+            index=0,
+            key="hist_odds_market",
+        )
+
+    _ho_sport_cfg = SPORTS_CATALOGUE[_ho_sport_label]
+    _ho_market_key = MARKET_KEY_MAP.get(_ho_market_label, "h2h")
+    _ho_has_draw = _ho_sport_cfg["has_draw"]
+    _ho_date_iso = f"{_ho_date.isoformat()}T12:00:00Z"
+
+    _ho_fetch = st.button("📥 Загрузить исторические коэффициенты",
+                          use_container_width=True, key="hist_odds_fetch_btn")
+
+    if _ho_fetch:
+        if not api_key:
+            st.warning("⚠️ Введи API ключ в боковой панели. Исторические данные недоступны в демо-режиме.")
+        else:
+            with st.spinner(f"Загружаю {_ho_sport_label} · {_ho_market_label} на {_ho_date}…"):
+                _ho_events, _ho_ts = fetch_historical_odds(
+                    api_key, _ho_sport_cfg["key"],
+                    REGION_MAP[region_label], _ho_market_key, _ho_date_iso,
+                )
+            if _ho_events is None:
+                st.error("❌ Ошибка загрузки. Проверь API ключ и доступность исторических данных для выбранной даты.")
+            elif not _ho_events:
+                st.info("ℹ️ Нет событий на выбранную дату. Попробуй другую дату или лигу.")
+            else:
+                st.session_state["hist_odds_events"] = _ho_events
+                st.session_state["hist_odds_ts"] = _ho_ts
+                st.session_state["hist_odds_mk"] = _ho_market_key
+                st.session_state["hist_odds_draw"] = _ho_has_draw
+                st.session_state["hist_odds_sport_label"] = _ho_sport_label
+
+    # ── Display stored historical data ──────────────────
+    _ho_stored = st.session_state.get("hist_odds_events")
+    if _ho_stored:
+        _ho_mk_stored = st.session_state.get("hist_odds_mk", "h2h")
+        _ho_draw_stored = st.session_state.get("hist_odds_draw", False)
+        _ho_ts_stored = st.session_state.get("hist_odds_ts", "")
+        _ho_sport_stored = st.session_state.get("hist_odds_sport_label", "")
+
+        _ho_df = parse_historical_to_df(_ho_stored, _ho_mk_stored, _ho_draw_stored)
+        if not _ho_df.empty:
+            st.success(f"✅ **{_ho_sport_stored}** — снимок **{_ho_ts_stored}** · "
+                       f"**{len(_ho_stored)}** матчей · **{_ho_df['Букмекер'].nunique()}** букмекеров")
+
+            # ── Summary metrics ────────────────────────────
+            _hm1, _hm2, _hm3, _hm4 = st.columns(4)
+            with _hm1:
+                st.metric("Матчей", _ho_df["Матч"].nunique())
+            with _hm2:
+                st.metric("Букмекеров", _ho_df["Букмекер"].nunique())
+            with _hm3:
+                st.metric("Строк данных", len(_ho_df))
+            with _hm4:
+                st.metric("Рынок", _ho_mk_stored.upper())
+
+            # ── Filter by match ────────────────────────────
+            _ho_matches = sorted(_ho_df["Матч"].unique())
+            _ho_sel_match = st.multiselect(
+                "🔍 Фильтр по матчу",
+                _ho_matches,
+                default=[],
+                key="hist_odds_match_filter",
+            )
+            _ho_display = _ho_df[_ho_df["Матч"].isin(_ho_sel_match)] if _ho_sel_match else _ho_df
+
+            # ── Data table ─────────────────────────────────
+            display_cols = [c for c in _ho_display.columns if not c.startswith("_")]
+            st.dataframe(
+                _ho_display[display_cols],
+                use_container_width=True,
+                height=min(600, 60 + len(_ho_display) * 36),
+            )
+
+            # ── Chart: odds comparison across bookmakers ───
+            if _ho_mk_stored == "h2h" and "Odds Хозяева (Am)" in _ho_display.columns:
+                st.markdown("##### 📊 Сравнение коэффициентов по букмекерам")
+                _ho_chart_match = st.selectbox(
+                    "Выбери матч для графика",
+                    _ho_display["Матч"].unique(),
+                    key="hist_odds_chart_match",
+                )
+                _ho_chart_data = _ho_display[_ho_display["Матч"] == _ho_chart_match].copy()
+                if not _ho_chart_data.empty:
+                    _ho_chart_data["Odds Хозяева (Am)"] = pd.to_numeric(
+                        _ho_chart_data["Odds Хозяева (Am)"], errors="coerce"
+                    )
+                    _ho_chart_data["Odds Гости (Am)"] = pd.to_numeric(
+                        _ho_chart_data["Odds Гости (Am)"], errors="coerce"
+                    )
+                    _ho_home = _ho_chart_data["Хозяева"].iloc[0]
+                    _ho_away = _ho_chart_data["Гости"].iloc[0]
+
+                    _ho_fig = go.Figure()
+                    _ho_fig.add_trace(go.Bar(
+                        x=_ho_chart_data["Букмекер"],
+                        y=_ho_chart_data["Odds Хозяева (Am)"],
+                        name=_ho_home,
+                        marker_color="#38bdf8",
+                    ))
+                    _ho_fig.add_trace(go.Bar(
+                        x=_ho_chart_data["Букмекер"],
+                        y=_ho_chart_data["Odds Гости (Am)"],
+                        name=_ho_away,
+                        marker_color="#f97316",
+                    ))
+                    if _ho_draw_stored and "Odds Ничья (Am)" in _ho_chart_data.columns:
+                        _ho_chart_data["Odds Ничья (Am)"] = pd.to_numeric(
+                            _ho_chart_data["Odds Ничья (Am)"], errors="coerce"
+                        )
+                        _ho_fig.add_trace(go.Bar(
+                            x=_ho_chart_data["Букмекер"],
+                            y=_ho_chart_data["Odds Ничья (Am)"],
+                            name="Ничья",
+                            marker_color="#4ade80",
+                        ))
+                    _ho_fig.update_layout(
+                        barmode="group",
+                        title=f"Odds: {_ho_chart_match}",
+                        xaxis_title="Букмекер",
+                        yaxis_title="American Odds",
+                        **DARK,
+                    )
+                    st.plotly_chart(_ho_fig, use_container_width=True)
+
+            # ── Download CSV ───────────────────────────────
+            st.download_button(
+                "⬇️ Скачать CSV",
+                _ho_display[display_cols].to_csv(index=False).encode(),
+                f"historical_odds_{_ho_date}.csv",
+                mime="text/csv",
+                key="hist_odds_csv_btn",
+            )
+        else:
+            st.info("ℹ️ Не удалось разобрать данные. Попробуй другой рынок или дату.")
+
+    elif not _ho_stored:
+        st.info(
+            "📈 Здесь можно посмотреть **исторические коэффициенты** — "
+            "снимок odds на любую дату начиная с июня 2020.\n\n"
+            "1. Выбери дату, лигу и рынок\n"
+            "2. Нажми **📥 Загрузить**\n"
+            "3. Анализируй таблицу и графики\n\n"
+            "**Требуется API ключ** [The Odds API](https://the-odds-api.com) "
+            "(исторические запросы тарифицируются отдельно)."
+        )
+
+# ── TAB 7: HISTORY (Google Sheets) ────────────────────
 with tab_history:
     st.markdown("#### 📊 История ставок — Google Sheets")
 
