@@ -2787,6 +2787,9 @@ with tab_hist_odds:
         )
     with _ho_col3:
         _ho_market_labels = SPORTS_CATALOGUE[_ho_sport_label]["markets"]
+        # Reset stale market if sport changed and old value is no longer valid
+        if "hist_odds_market" in st.session_state and st.session_state["hist_odds_market"] not in _ho_market_labels:
+            del st.session_state["hist_odds_market"]
         _ho_market_label = st.selectbox(
             "📊 Рынок",
             _ho_market_labels,

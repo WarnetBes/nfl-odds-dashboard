@@ -758,7 +758,7 @@ def fetch_historical_odds(
     regions: str,
     market_key: str,
     date_iso: str,
-    session: requests.Session | None = None,
+    session=None,
 ) -> tuple:
     """Fetch historical odds snapshot from The Odds API.
 
