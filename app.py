@@ -1328,6 +1328,7 @@ defaults = {
     "selected_bm_state": [],   # persisted bookmaker selection
     "sport_filter": "Все",    # sport category filter
     "theme": "dark",           # dark | light — сохраняется между сессиями
+    "odds_snapshots": {},      # {event_id: [{ts, match, home_dec, away_dec, draw_dec, bm}]}
 }
 for k, v in defaults.items():
     if k not in st.session_state:
@@ -1518,6 +1519,47 @@ with st.sidebar:
     with col_gs2:
         if st.button("📖 Читать", use_container_width=True, key="gs_read_now"):
             st.session_state["gs_read_triggered"] = True
+
+    # ── WeekSelector ────────────────────────────
+    st.divider()
+    st.markdown("**📅 Фильтр по датам**")
+    _today = datetime.now(MSK).date()
+    _week_from, _week_to = st.date_input(
+        "Период матчей",
+        value=(st.session_state.get("week_from", _today),
+               st.session_state.get("week_to", _today + pd.Timedelta(days=7))),
+        min_value=_today - pd.Timedelta(days=30),
+        max_value=_today + pd.Timedelta(days=60),
+        format="DD.MM.YYYY",
+        key="week_selector",
+    ) if True else (_today, _today + pd.Timedelta(days=7))
+    # date_input returns tuple when range selected
+    if isinstance(_week_from, tuple):
+        _week_to = _week_from[1] if len(_week_from) > 1 else _today + pd.Timedelta(days=7)
+        _week_from = _week_from[0]
+    st.session_state["week_from"] = _week_from
+    st.session_state["week_to"]   = _week_to
+
+    # ── TeamFilter ───────────────────────────
+    st.divider()
+    st.markdown("**🏆 Фильтр по командам**")
+    # Команды берём из events (если загружены)
+    _team_options = []
+    if st.session_state.events:
+        for _ev in st.session_state.events:
+            _ht = _ev.get("home_team", "")
+            _at = _ev.get("away_team", "")
+            if _ht and _ht not in _team_options: _team_options.append(_ht)
+            if _at and _at not in _team_options: _team_options.append(_at)
+        _team_options = sorted(_team_options)
+    selected_teams = st.multiselect(
+        "Команды (пусто = все)",
+        _team_options,
+        default=st.session_state.get("selected_teams", []),
+        placeholder="Все команды",
+        key="team_multiselect",
+    )
+    st.session_state["selected_teams"] = selected_teams
 
     st.divider()
     st.markdown("**💰 Управление банкроллом**")
@@ -1867,8 +1909,28 @@ if st.session_state.events is None:
 # ─────────────────────────────────────────────
 #  BUILD DF
 # ─────────────────────────────────────────────
+# ── WeekSelector фильтр по дате начала матча ────────────────
+_wk_from = st.session_state.get("week_from", None)
+_wk_to   = st.session_state.get("week_to",   None)
+
+def _event_in_week(ev):
+    """True if event commence_time falls within [week_from, week_to] (inclusive)."""
+    if not _wk_from or not _wk_to:
+        return True
+    try:
+        ct = ev.get("commence_time", "")
+        if not ct:
+            return True
+        import datetime as _dt
+        ev_date = _dt.datetime.strptime(ct[:10], "%Y-%m-%d").date()
+        return _wk_from <= ev_date <= _wk_to
+    except Exception:
+        return True
+
 filtered_events = []
 for ev in st.session_state.events:
+    if not _event_in_week(ev):
+        continue
     bms = [b for b in ev.get("bookmakers",[]) if not selected_bm or b.get("title") in selected_bm]
     if bms:
         filtered_events.append({**ev, "bookmakers": bms})
@@ -1898,6 +1960,66 @@ else:
 if df.empty:
     st.warning(f"⚠️ Нет данных для рынка «{market_label}».")
     st.stop()
+
+# ── TeamFilter: фильтр df по командам ────────────────────────
+_sel_teams = st.session_state.get("selected_teams", [])
+if _sel_teams and "Хозяева" in df.columns and "Гости" in df.columns:
+    df = df[
+        df["Хозяева"].isin(_sel_teams) | df["Гости"].isin(_sel_teams)
+    ].copy()
+
+if df.empty:
+    st.warning("⚠️ Нет матчей для выбранных команд.")
+    st.stop()
+
+# ── Снапшот odds для LineMovementChart ─────────────────────
+# Записываем текущие коэффициенты в odds_snapshots после каждой загрузки
+if should_fetch or fetch_all_btn:
+    _snap_ts = time.time()
+    if "odds_snapshots" not in st.session_state:
+        st.session_state["odds_snapshots"] = {}
+    # Итерируем по событиям (events), а не по df, чтобы получить event_id
+    for _ev in (st.session_state.events or []):
+        _eid  = _ev.get("id", "")
+        _home = _ev.get("home_team", "")
+        _away = _ev.get("away_team", "")
+        _mname = f"{_home} vs {_away}"
+        if not _eid:
+            continue
+        for _bm in _ev.get("bookmakers", []):
+            _bm_title = _bm.get("title", "")
+            for _mkt in _bm.get("markets", []):
+                if _mkt.get("key") != "h2h":
+                    continue
+                _outcomes = {o["name"]: o["price"] for o in _mkt.get("outcomes", [])}
+                _h_am = _outcomes.get(_home)
+                _a_am = _outcomes.get(_away)
+                if _h_am is None or _a_am is None:
+                    continue
+                try:
+                    _h_dec = american_to_decimal(float(_h_am))
+                    _a_dec = american_to_decimal(float(_a_am))
+                    _d_am  = _outcomes.get("Draw")
+                    _d_dec = american_to_decimal(float(_d_am)) if _d_am else None
+                except Exception:
+                    continue
+                _snap = {
+                    "ts": _snap_ts, "match": _mname,
+                    "home_dec": _h_dec, "away_dec": _a_dec,
+                    "draw_dec": _d_dec, "bm": _bm_title,
+                }
+                if _eid not in st.session_state["odds_snapshots"]:
+                    st.session_state["odds_snapshots"][_eid] = []
+                # Добавляем только если ts или odds изменились
+                _history = st.session_state["odds_snapshots"][_eid]
+                if (not _history
+                        or abs(_snap_ts - _history[-1]["ts"]) > 60  # min 60s between snaps
+                        or _history[-1].get("home_dec") != _h_dec
+                        or _history[-1].get("away_dec") != _a_dec):
+                    _history.append(_snap)
+                    # Храним макс 100 снапшотов на матч
+                    if len(_history) > 100:
+                        st.session_state["odds_snapshots"][_eid] = _history[-100:]
 
 # ─────────────────────────────────────────────
 #  METRICS
@@ -2618,6 +2740,61 @@ with tab_chart:
                 text=tdf["Тотал Линия"].astype(float).apply(str),textposition="top center"))
             fig4.update_layout(title="Линии тотала",height=300,**DARK)
             st.plotly_chart(fig4,use_container_width=True)
+
+
+    # ── LineMovementChart: история движения линии ───────────────────────
+    st.divider()
+    st.markdown("#### 📈 Движение линии (Line Movement)")
+    _snap_store = st.session_state.get("odds_snapshots", {})
+    # Ищем event_id для выбранного матча
+    _lm_event_id = None
+    for _eid_k, _snaps_v in _snap_store.items():
+        if _snaps_v and (_snaps_v[0].get("match", "") == sel2
+                         or home_t in _snaps_v[0].get("match", "")
+                         or away_t in _snaps_v[0].get("match", "")):
+            _lm_event_id = _eid_k
+            break
+    if _lm_event_id and len(_snap_store.get(_lm_event_id, [])) >= 2:
+        _snaps = _snap_store[_lm_event_id]
+        _lm_bms = list({s["bm"] for s in _snaps})
+        _lm_fig = go.Figure()
+        for _lm_bm in _lm_bms:
+            _bm_snaps = [s for s in _snaps if s["bm"] == _lm_bm]
+            if len(_bm_snaps) < 2:
+                continue
+            _xs = [datetime.fromtimestamp(s["ts"], tz=MSK).strftime("%H:%M:%S") for s in _bm_snaps]
+            _lm_fig.add_trace(go.Scatter(
+                x=_xs, y=[s["home_dec"] for s in _bm_snaps],
+                mode="lines+markers", name=f"{_lm_bm} ({home_t})",
+                line=dict(width=2),
+            ))
+            _lm_fig.add_trace(go.Scatter(
+                x=_xs, y=[s["away_dec"] for s in _bm_snaps],
+                mode="lines+markers", name=f"{_lm_bm} ({away_t})",
+                line=dict(width=2, dash="dot"),
+            ))
+            if has_draw:
+                _draw_vals = [s.get("draw_dec") for s in _bm_snaps if s.get("draw_dec")]
+                if len(_draw_vals) >= 2:
+                    _lm_fig.add_trace(go.Scatter(
+                        x=_xs[:len(_draw_vals)],
+                        y=_draw_vals,
+                        mode="lines+markers",
+                        name=f"{_lm_bm} (Ничья)",
+                        line=dict(width=2, dash="dash"),
+                    ))
+        _lm_fig.update_layout(
+            title=f"📈 Line Movement · {sel2}",
+            xaxis_title="Время (МСК)", yaxis_title="Decimal Odds",
+            height=420, **DARK,
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        )
+        st.plotly_chart(_lm_fig, use_container_width=True)
+        st.caption(f"🔍 {len(_snap_store.get(_lm_event_id, []))} снапшотов · обновляется при каждом фетче")
+    elif _lm_event_id and len(_snap_store.get(_lm_event_id, [])) == 1:
+        st.info("ℹ️ Line Movement появится после **второй загрузки** коэффициентов — нужно минимум 2 точки.")
+    else:
+        st.info("ℹ️ Нажми **Загрузить коэффициенты** ещё раз, чтобы увидеть движение линии.")
 
 # ── TAB 3: VALUE BETS ─────────────────────────
 with tab_value:
