@@ -1471,8 +1471,11 @@ with st.sidebar:
                                help="Нужен App Password (не обычный пароль)")
     gmail_pass = st.text_input("App Password Gmail", type="password",
                                help="Настройки → Безопасность → Пароли приложений")
-    gmail_to   = st.text_input("Получатель", placeholder="recipient@example.com",
-                               value="mezhavikins@yandex.ru")
+    gmail_to   = st.text_input("Получатель", placeholder="your@email.com",
+                               value=st.session_state.get("gmail_to_saved", ""),
+                               help="Адрес для получения уведомлений о value bets")
+    if gmail_to:
+        st.session_state["gmail_to_saved"] = gmail_to  # сохраняем между сессиями
     if st.button("📤 Тест письма", use_container_width=True):
         if gmail_from and gmail_pass and gmail_to:
             ok, msg = send_gmail_alert(gmail_from, gmail_pass, gmail_to,
