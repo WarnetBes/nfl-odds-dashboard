@@ -26,6 +26,7 @@ from telegram import (
     Update,
 )
 from telegram.constants import ParseMode
+from telegram.error import BadRequest as TgBadRequest
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -1242,6 +1243,15 @@ def main() -> None:
     app.add_handler(conv_setkey)
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+
+    # Глобальный обработчик ошибок — спрятываем BadRequest (сообщение не изменилось) и логируем остальное
+    async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+        err = context.error
+        if isinstance(err, TgBadRequest) and "not modified" in str(err).lower():
+            return  # игнорируем — безвредная ошибка
+        logger.warning("Update %s вызвал ошибку: %s", update, err)
+
+    app.add_error_handler(error_handler)
 
     async def post_init(application: Application) -> None:
         await application.bot.set_my_commands([
