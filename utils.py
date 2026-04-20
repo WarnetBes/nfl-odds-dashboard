@@ -1149,3 +1149,119 @@ def expected_value_from_history(
     """
     p = win_rate_pct / 100.0
     return round((p * (avg_odds_dec - 1.0) - (1.0 - p)) * 100.0, 2)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  21. LINE MOVEMENT & STEAM DETECTION + PARLAY EV
+# ─────────────────────────────────────────────────────────────────────────────
+
+def detect_line_movement(
+    snapshots: list,
+    threshold_pct: float = 3.0,
+) -> list:
+    """
+    Обнаруживает значительное движение линии по implied probability.
+    snapshots: список dict {"ts": float, "bm": str, "home_dec": float, "away_dec": float}
+    threshold_pct: минимальное движение в % implied для алерта.
+    Возвращает список словарей с описанием движений.
+    """
+    if len(snapshots) < 2:
+        return []
+    alerts = []
+    first = snapshots[0]
+    last  = snapshots[-1]
+    for outcome, key in [("Хозяева", "home_dec"), ("Гости", "away_dec")]:
+        v0 = float(first.get(key, 0) or 0)
+        v1 = float(last.get(key, 0) or 0)
+        if v0 <= 1.0 or v1 <= 1.0:
+            continue
+        move = (1.0 / v1 - 1.0 / v0) * 100.0
+        if abs(move) >= threshold_pct:
+            direction = "⬆️ Рост implied" if move > 0 else "⬇️ Падение implied"
+            alerts.append({
+                "outcome":      outcome,
+                "move_pct":     round(move, 2),
+                "direction":    direction,
+                "from_dec":     round(v0, 4),
+                "to_dec":       round(v1, 4),
+                "n_snapshots":  len(snapshots),
+            })
+    return alerts
+
+
+def detect_steam_move(
+    snapshots_by_bm: dict,
+    time_window_sec: float = 120.0,
+    min_books_moved: int = 3,
+    threshold_implied_pct: float = 1.5,
+) -> bool:
+    """
+    Steam move — синхронное движение у N+ букмекеров в одну сторону.
+    snapshots_by_bm: {"Pinnacle": [{"ts": unix, "home_dec": 2.1, ...}, ...], ...}
+    Возвращает True если detected.
+    """
+    if not snapshots_by_bm:
+        return False
+    all_last_ts = [s[-1]["ts"] for s in snapshots_by_bm.values() if s]
+    if not all_last_ts:
+        return False
+    now = max(all_last_ts)
+    direction_counts = {"up": 0, "down": 0}
+    for bm, snaps in snapshots_by_bm.items():
+        recent = [s for s in snaps if now - float(s.get("ts", 0)) <= time_window_sec]
+        if len(recent) < 2:
+            continue
+        v0 = float(recent[0].get("home_dec", 0) or 0)
+        v1 = float(recent[-1].get("home_dec", 0) or 0)
+        if v0 <= 1.0 or v1 <= 1.0:
+            continue
+        move = (1.0 / v1 - 1.0 / v0) * 100.0
+        if move > threshold_implied_pct:
+            direction_counts["up"] += 1
+        elif move < -threshold_implied_pct:
+            direction_counts["down"] += 1
+    return max(direction_counts.values()) >= min_books_moved
+
+
+def parlay_ev(legs: list) -> float:
+    """
+    EV многоногового парлея.
+    legs = [{"fair_prob_pct": 55.0, "dec_odds": 2.10}, ...]
+    EV_parlay = (Π fair_prob_i) × (Π dec_odds_i) − 1
+    Положительное значение → положительный ожидаемый исход.
+    """
+    if not legs:
+        return 0.0
+    prob_product = 1.0
+    odds_product = 1.0
+    for leg in legs:
+        p = float(leg.get("fair_prob_pct", 50.0)) / 100.0
+        d = float(leg.get("dec_odds", 2.0))
+        if p <= 0 or d <= 1.0:
+            return 0.0
+        prob_product *= p
+        odds_product *= d
+    return round(prob_product * odds_product - 1.0, 6)
+
+
+def parlay_kelly_stake(
+    legs: list,
+    bankroll: float,
+    fraction: float = 0.25,
+) -> float:
+    """
+    Kelly stake для парлея.
+    f* = fraction × ((p × D − 1) / (D − 1))
+    где p = prob_product, D = odds_product.
+    """
+    if not legs or bankroll <= 0:
+        return 0.0
+    p = 1.0
+    d = 1.0
+    for leg in legs:
+        p *= float(leg.get("fair_prob_pct", 50.0)) / 100.0
+        d *= float(leg.get("dec_odds", 2.0))
+    if d <= 1.0:
+        return 0.0
+    f_raw = (p * d - 1.0) / (d - 1.0)
+    return round(max(0.0, fraction * f_raw * bankroll), 2)

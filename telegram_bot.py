@@ -51,6 +51,17 @@ from utils import (
     compute_value_bets,
     SHARP_BOOKS,
     SPORT_EV_THRESHOLDS,
+    # ── Новые модели ──
+    elo_expected_prob,
+    elo_update_pair,
+    elo_edge_vs_market,
+    ELO_INITIAL,
+    market_efficiency_score,
+    composite_independent_score,
+    clv_from_american,
+    detect_line_movement,
+    detect_steam_move,
+    parlay_ev,
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -709,6 +720,58 @@ def _schedule_refresh(context: ContextTypes.DEFAULT_TYPE, chat_id: int, interval
 # ─────────────────────────────────────────────────────────────────────────────
 #  КОМАНДЫ
 # ─────────────────────────────────────────────────────────────────────────────
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  ELO / LINE MOVEMENT ALERTS (Блок 8)
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def send_elo_alert(
+    bot,
+    chat_id: str,
+    match: str,
+    elo_edge: float,
+    ev_edge_pct: float,
+    composite: float,
+) -> None:
+    """Отправляет алерт когда Elo-edge и EV-edge оба положительны."""
+    if elo_edge < 1.5 or ev_edge_pct < 2.0:
+        return  # Фильтр шума
+    msg = (
+        f"🧠 <b>Elo + EV Double Signal</b>\n"
+        f"📋 Матч: <b>{match}</b>\n"
+        f"📊 Elo Edge: <b>{elo_edge:+.2f}%</b>\n"
+        f"💰 EV Edge: <b>{ev_edge_pct:+.2f}%</b>\n"
+        f"🎯 Composite Score: <b>{composite:.0f}/100</b>\n"
+        f"⚡ Оба сигнала в одну сторону — высокое доверие"
+    )
+    try:
+        await bot.send_message(chat_id=chat_id, text=msg, parse_mode="HTML")
+    except Exception as _e:
+        logger.warning("send_elo_alert failed: %s", _e)
+
+
+async def send_line_movement_alert(
+    bot,
+    chat_id: str,
+    match: str,
+    alerts: list,
+) -> None:
+    """Отправляет алерт при значительном движении линии (>= 3%)."""
+    if not alerts:
+        return
+    lines = [f"📈 <b>Line Movement Alert</b>\n🏈 {match}"]
+    for a in alerts:
+        lines.append(
+            f"  {a['direction']} {a['move_pct']:+.1f}% • {a['outcome']} "
+            f"({a['from_dec']:.2f} → {a['to_dec']:.2f})"
+        )
+    msg = "\n".join(lines)
+    try:
+        await bot.send_message(chat_id=chat_id, text=msg, parse_mode="HTML")
+    except Exception as _e:
+        logger.warning("send_line_movement_alert failed: %s", _e)
+
+
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     state = get_state(update.effective_chat.id)

@@ -40,17 +40,42 @@ from utils import (
     sport_ev_threshold,
     sharp_books_in_group,
     SPORT_EV_THRESHOLDS,
-    # ── Новые независимые модели (roadmap 11–17) ──
+    get_fair_probs,
+    # ── Независимые модели (roadmap 11–17) ──
     elo_expected_prob,
+    elo_update_pair,
     elo_edge_vs_market,
     ELO_INITIAL,
+    ELO_K,
     clv_pct,
+    clv_from_american,
+    avg_clv_pct,
     bayesian_shrink_prob,
     market_efficiency_score,
     composite_independent_score,
     american_to_decimal,
     decimal_to_implied,
     no_vig_prob,
+    # ── SRS ──
+    compute_srs,
+    srs_projected_spread,
+    # ── Poisson ──
+    poisson_over_prob,
+    poisson_total_under_prob,
+    lambda_from_stats,
+    # ── Калибровка ──
+    brier_score,
+    log_loss_score,
+    roi_percent,
+    win_rate,
+    expected_value_from_history,
+    clamp_0_100,
+    # ── Line Movement ──
+    detect_line_movement,
+    detect_steam_move,
+    # ── Parlay ──
+    parlay_ev,
+    parlay_kelly_stake,
 )
 
 # ── Импорт auth модуля ──────────────────────
@@ -1581,6 +1606,20 @@ with st.sidebar:
         help="Используется для расчёта Kelly Stake в Сигналах и Value Bets",
     )
     st.session_state["bankroll"] = bankroll
+
+    # ── Kelly Fraction slider (Блок 3) ──────────
+    kelly_fraction_ui = st.slider(
+        "Kelly Fraction",
+        min_value=0.05,
+        max_value=0.50,
+        value=float(st.session_state.get("kelly_fraction", 0.25)),
+        step=0.05,
+        format="%.2f",
+        help="0.25 = Quarter Kelly (рекомендуется). 0.10 = очень консервативно. 0.50 = Half Kelly.",
+        key="kelly_fraction_slider",
+    )
+    st.session_state["kelly_fraction"] = kelly_fraction_ui
+
     fetch_btn = st.button("🔄 Загрузить коэффициенты", use_container_width=True, type="primary")
 
     # ── PDF экспорт ──────────────────────────
@@ -1682,6 +1721,45 @@ with st.sidebar:
                         st.success(f"✅ Google Sheets: OK — '{_sh.title}'")
                     except Exception as _e:
                         st.error(f"❌ Google Sheets: {_e}")
+
+    # ── Elo Ratings Management (Блок 6) ──────────
+    st.divider()
+    st.markdown("**🧠 Elo-рейтинги команд**")
+    if "elo_ratings" not in st.session_state:
+        st.session_state["elo_ratings"] = {}
+    with st.expander("📊 Управление Elo", expanded=False):
+        _elo_team = st.text_input("Команда", placeholder="Chiefs", key="elo_team_input")
+        _elo_col1, _elo_col2 = st.columns(2)
+        with _elo_col1:
+            _elo_rating = st.number_input("Рейтинг", value=1500, min_value=800, max_value=2200, key="elo_rating_input")
+        with _elo_col2:
+            if st.button("Сохранить", key="elo_save_btn", use_container_width=True):
+                if _elo_team.strip():
+                    st.session_state["elo_ratings"][_elo_team.strip()] = float(_elo_rating)
+                    st.success(f"✅ {_elo_team}: {_elo_rating}")
+        st.markdown("**Обновить после матча:**")
+        _upd_home = st.text_input("Хозяева (победитель/проигравший)", key="elo_upd_home")
+        _upd_away = st.text_input("Гости", key="elo_upd_away")
+        _upd_winner = st.selectbox("Победитель", ["Хозяева", "Гости"], key="elo_upd_winner")
+        if st.button("Обновить Elo", key="elo_update_btn", use_container_width=True):
+            _store = st.session_state.get("elo_ratings", {})
+            _rh = _store.get(_upd_home.strip(), ELO_INITIAL)
+            _ra = _store.get(_upd_away.strip(), ELO_INITIAL)
+            _home_won = (_upd_winner == "Хозяева")
+            try:
+                _new_h, _new_a = elo_update_pair(_rh, _ra, _home_won)
+                _store[_upd_home.strip()] = _new_h
+                _store[_upd_away.strip()] = _new_a
+                st.session_state["elo_ratings"] = _store
+                st.success(f"✅ {_upd_home}: {_rh:.0f}→{_new_h:.0f} | {_upd_away}: {_ra:.0f}→{_new_a:.0f}")
+            except Exception as _e:
+                st.error(f"Elo ошибка: {_e}")
+        if st.session_state.get("elo_ratings"):
+            _elo_view = pd.DataFrame([
+                {"Команда": t, "Elo": round(r, 0)}
+                for t, r in sorted(st.session_state["elo_ratings"].items(), key=lambda x: -x[1])
+            ])
+            st.dataframe(_elo_view, use_container_width=True, hide_index=True, height=160)
 
     st.divider()
     st.caption("📡 [The Odds API](https://the-odds-api.com) · [ESPN API](https://site.api.espn.com)")
@@ -2032,6 +2110,21 @@ if should_fetch or fetch_all_btn:
                     if len(_history) > 100:
                         st.session_state["odds_snapshots"][_eid] = _history[-100:]
 
+# ── Блок 7: Line Movement Alert ──────────────────────────────────────────────
+for _eid_lm, _snaps_lm in st.session_state.get("odds_snapshots", {}).items():
+    if len(_snaps_lm) >= 2:
+        _lm_alerts = detect_line_movement(_snaps_lm, threshold_pct=3.0)
+        for _lm_alert in _lm_alerts:
+            try:
+                _match_name = _snaps_lm[-1].get("match", _eid_lm[:20]) if _snaps_lm else _eid_lm[:20]
+                st.toast(
+                    f"📈 Line Move: {_lm_alert['direction']} {_lm_alert['move_pct']:+.1f}% | {_match_name} ({_lm_alert['outcome']})",
+                    icon="📈",
+                )
+            except Exception:
+                pass
+
+
 # ── Новые независимые метрики (read-only колонки) ─────────────────
 # Используется ранее сохранённый в session_state Elo-словарь
 # Добавляем: Elo Home %, Elo Edge %, MES, IndepScore
@@ -2344,6 +2437,71 @@ with tab_signals:
 </div>""",
                 unsafe_allow_html=True,
             )
+
+            # ── Блок 1: Elo / MES / Composite независимые метрики ───
+            _show_indep = st.checkbox(
+                "🧠 Показать независимые модельные метрики (Elo / MES / Score)",
+                value=False,
+                key="show_indep_metrics",
+            )
+            if _show_indep:
+                _indep_rows = []
+                _vdf_cached = st.session_state.get("vdf_all_cached", pd.DataFrame())
+                for _m, _grp in df.groupby("Матч"):
+                    try:
+                        _h_dec_list = []
+                        for _, _row in _grp.iterrows():
+                            try:
+                                _h_dec_list.append(american_to_decimal(float(str(_row.get("Коэфф Хозяева", 0) or 0))))
+                            except Exception:
+                                pass
+                        _mes = market_efficiency_score([x for x in _h_dec_list if x > 1.0])
+                        _elo_store = st.session_state.get("elo_ratings", {})
+                        _home_team = str(_grp["Хозяева"].iloc[0]) if "Хозяева" in _grp.columns else ""
+                        _away_team = str(_grp["Гости"].iloc[0]) if "Гости" in _grp.columns else ""
+                        _r_home = _elo_store.get(_home_team, ELO_INITIAL)
+                        _r_away = _elo_store.get(_away_team, ELO_INITIAL)
+                        _elo_p = elo_expected_prob(_r_home, _r_away)
+                        _no_vig_list = []
+                        for _, _row in _grp.iterrows():
+                            try:
+                                _h_am = float(str(_row.get("Коэфф Хозяева", 0) or 0))
+                                _a_am = float(str(_row.get("Коэфф Гости", 0) or 0))
+                                if _h_am != 0 and _a_am != 0:
+                                    _no_vig_list.append(no_vig_prob(american_to_decimal(_h_am), american_to_decimal(_a_am)))
+                            except Exception:
+                                pass
+                        _market_home_pct = (sum(_no_vig_list) / len(_no_vig_list) * 100) if _no_vig_list else 50.0
+                        _elo_edge = elo_edge_vs_market(_elo_p, _market_home_pct)
+                        _best_ev = 0.0
+                        if not _vdf_cached.empty and "Матч" in _vdf_cached.columns:
+                            try:
+                                _mvb = _vdf_cached[_vdf_cached["Матч"] == _m]
+                                if not _mvb.empty:
+                                    _best_ev = max(pd.to_numeric(
+                                        _mvb["EV Edge %"].astype(str).str.replace("%","").str.replace("+",""),
+                                        errors="coerce"
+                                    ).dropna().tolist() or [0.0])
+                            except Exception:
+                                pass
+                        _comp = composite_independent_score(_elo_edge, _best_ev, _mes)
+                        _indep_rows.append({
+                            "Матч":           _m,
+                            "Elo Home %":     f"{_elo_p*100:.1f}%",
+                            "Elo Edge пп":   f"{_elo_edge:+.2f}",
+                            "MES":            f"{_mes:.0f}/100",
+                            "EV Edge %":      f"{_best_ev:+.2f}%",
+                            "Composite":      f"{_comp:.0f}/100",
+                            "📊":              "🔥 Сильный" if _comp >= 60 else ("⚡ Умерен" if _comp >= 35 else "❄️ Слабый"),
+                        })
+                    except Exception:
+                        pass
+                if _indep_rows:
+                    _indep_df = pd.DataFrame(_indep_rows).sort_values("Composite", ascending=False)
+                    st.dataframe(_indep_df, use_container_width=True, hide_index=True)
+                    st.caption("🧠 Elo — базовый 1500 для всех команд до накопления истории. MES: 100 = рынок согласован. Composite = взвешенный балл.")
+                else:
+                    st.info("Загрузи коэффициенты для получения независимых метрик.")
 
             for _, sig in sdf.iterrows():
                 conf       = int(sig["_conf"]) if "_conf" in sig.index else 0
@@ -2736,6 +2894,62 @@ with tab_table:
 
 > ⚠️ Elo использует нейтральный старт 1500 для всех команд до накопления исторических данных. Используй как дополнительный сигнал, не как замену Kelly/EV.
             """)
+
+    # ── Блок 5: SRS Spread Comparison ─────────────────────────────────
+    with st.expander("🧮 SRS — модельный спред (требует историю матчей)", expanded=False):
+        st.caption(
+            "SRS (Simple Rating System) считает силу команд в очках. "
+            "Введи последние матчи — получишь независимый спред для сравнения с рынком."
+        )
+        _srs_input = st.text_area(
+            "Последние матчи (формат: Хозяева,Гости,Score_H,Score_A — по одному на строку)",
+            placeholder="Chiefs,Bills,27,21\nEagles,Cowboys,34,17\nPackers,Bears,24,10",
+            height=110,
+            key="srs_input",
+        )
+        if st.button("🏈 Рассчитать SRS", key="calc_srs", use_container_width=True):
+            try:
+                _srs_games = []
+                for _line in _srs_input.strip().splitlines():
+                    _parts = [p.strip() for p in _line.split(",")]
+                    if len(_parts) == 4:
+                        _srs_games.append({
+                            "home": _parts[0], "away": _parts[1],
+                            "home_score": float(_parts[2]), "away_score": float(_parts[3])
+                        })
+                if len(_srs_games) < 3:
+                    st.warning("Нужно минимум 3 матча для SRS.")
+                else:
+                    _srs_ratings = compute_srs(_srs_games)
+                    _srs_df = pd.DataFrame([
+                        {"Команда": t, "SRS": r}
+                        for t, r in sorted(_srs_ratings.items(), key=lambda x: -x[1])
+                    ])
+                    st.dataframe(_srs_df, use_container_width=True, hide_index=True)
+                    # Сохраняем рейтинги в session_state
+                    st.session_state["srs_ratings"] = _srs_ratings
+                    st.caption("✅ SRS рейтинги сохранены — теперь они доступны для сравнения со спредами.")
+            except Exception as _e:
+                st.error(f"Ошибка SRS: {_e}")
+
+        # Сравнение модельного спреда с рыночным
+        _srs_r = st.session_state.get("srs_ratings", {})
+        if _srs_r and df is not None and not df.empty:
+            st.markdown("**📊 Модельный vs рыночный спред:**")
+            _srs_rows = []
+            for _m, _grp in df.groupby("Матч"):
+                _ht = str(_grp["Хозяева"].iloc[0]) if "Хозяева" in _grp.columns else ""
+                _at = str(_grp["Гости"].iloc[0]) if "Гости" in _grp.columns else ""
+                if _ht in _srs_r and _at in _srs_r:
+                    _model_sp = srs_projected_spread(_ht, _at, _srs_r)
+                    _srs_rows.append({
+                        "Матч": _m,
+                        "Модельный спред": f"{_model_sp:+.1f}",
+                        "Сигнал": "🔴 Хозяева недооценены" if _model_sp > 3 else ("🔵 Гости недооценены" if _model_sp < -3 else "⚪ Нейтрально"),
+                    })
+            if _srs_rows:
+                st.dataframe(pd.DataFrame(_srs_rows), use_container_width=True, hide_index=True)
+
 
 # ── TAB 2: CHARTS ─────────────────────────────
 with tab_chart:
@@ -3140,6 +3354,29 @@ client_x509_cert_url = "..."
 ```
 """)
 
+    # ── Блок 2: CLV калькулятор ──────────────────────────────────
+    st.divider()
+    st.markdown("#### 📏 CLV — Closing Line Value трекер")
+    st.caption("Введи финальный коэффициент — получишь, насколько ставка была лучше закрытия. CLV > 0 = beat the close 📈")
+    _clv_col1, _clv_col2 = st.columns(2)
+    with _clv_col1:
+        _clv_open_am  = st.number_input("Открывающий кофф (American)",  value=-110, step=5, key="clv_open")
+    with _clv_col2:
+        _clv_close_am = st.number_input("Закрывающий кофф (American)", value=-120, step=5, key="clv_close")
+    if st.button("📏 Рассчитать CLV", key="calc_clv", use_container_width=True):
+        _clv_result = clv_from_american(float(_clv_open_am), float(_clv_close_am))
+        if _clv_result > 0:
+            st.success(f"✅ CLV = **+{_clv_result:.3f}%** — ставка была выгоднее закрытия рынка")
+        elif _clv_result < 0:
+            st.warning(f"⚠️ CLV = **{_clv_result:.3f}%** — рынок двинулся против тебя")
+        else:
+            st.info("CLV = 0 — коэффициент не изменился")
+        st.caption(
+            "CLV > 0: ты поставил до того, как рынок скорректировался. "
+            "Устойчивый положительный CLV по истории — главный признак реального edge."
+        )
+
+
 # ── TAB 7: BANKROLL STATISTICS ───────────────────────────────────────────────
 with tab_bankroll:
     st.markdown("#### 💰 Статистика банкролла")
@@ -3304,6 +3541,56 @@ with tab_bankroll:
                    .to_csv(index=False).encode(),
                 "bankroll_history.csv", mime="text/csv"
             )
+
+            # ── Блок 4: Калибровка модели (Brier + Log-Loss) ──────────────
+            st.divider()
+            st.markdown("##### 🎯 Калибровка модели (Brier Score)")
+            st.caption(
+                "Заполни исходы (1=win, 0=loss). "
+                "Brier Score < 0.20 — хорошая модель. Случайная = 0.25."
+            )
+            _cal_col1, _cal_col2 = st.columns(2)
+            with _cal_col1:
+                _probs_input = st.text_area(
+                    "Предсказанные вероятности (через запятую)",
+                    placeholder="0.55, 0.62, 0.48, 0.71",
+                    key="cal_probs",
+                    height=100,
+                )
+            with _cal_col2:
+                _outcomes_input = st.text_area(
+                    "Фактические исходы (1/0, через запятую)",
+                    placeholder="1, 1, 0, 1",
+                    key="cal_outcomes",
+                    height=100,
+                )
+            if st.button("🎯 Рассчитать Brier + Log-Loss", key="calc_calibration", use_container_width=True):
+                try:
+                    _p_list = [float(x.strip()) for x in _probs_input.split(",") if x.strip()]
+                    _o_list = [float(x.strip()) for x in _outcomes_input.split(",") if x.strip()]
+                    if len(_p_list) != len(_o_list):
+                        st.error("Количество вероятностей и исходов должно совпадать.")
+                    elif len(_p_list) < 3:
+                        st.warning("Нужно минимум 3 ставки.")
+                    else:
+                        _bs  = brier_score(_p_list, _o_list)
+                        _ll  = log_loss_score(_p_list, _o_list)
+                        _wr  = win_rate([int(o) for o in _o_list])
+                        _avg_dec = sum(1.0/p for p in _p_list if p > 0) / len(_p_list)
+                        _roi = expected_value_from_history(_avg_dec, _wr)
+                        _bc1, _bc2, _bc3, _bc4 = st.columns(4)
+                        _bc1.metric("Brier Score", f"{_bs:.4f}", delta="✅ Хорошо" if _bs < 0.20 else "⚠️ Слабо", delta_color="off")
+                        _bc2.metric("Log-Loss",    f"{_ll:.4f}")
+                        _bc3.metric("Win Rate",    f"{_wr:.1f}%")
+                        _bc4.metric("EV по истории", f"{_roi:+.1f}%")
+                        if _bs < 0.20:
+                            st.success("✅ Модель хорошо калибрована (Brier < 0.20)")
+                        elif _bs < 0.23:
+                            st.warning("⚠️ Модель умеренная — увеличь выборку и фильтруй низкоуверенные ставки")
+                        else:
+                            st.error("❌ Brier ≥ 0.23 — модель хуже рыночного консенсуса. Пересмотри фильтры.")
+                except Exception as _e:
+                    st.error(f"Ошибка парсинга: {_e}")
 
 # ── TAB 8: AI АНАЛИЗ (CrewAI-style multi-agent) ──────────────────────────────
 with tab_ai:
