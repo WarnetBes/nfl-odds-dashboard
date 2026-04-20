@@ -40,6 +40,17 @@ from utils import (
     sport_ev_threshold,
     sharp_books_in_group,
     SPORT_EV_THRESHOLDS,
+    # ── Новые независимые модели (roadmap 11–17) ──
+    elo_expected_prob,
+    elo_edge_vs_market,
+    ELO_INITIAL,
+    clv_pct,
+    bayesian_shrink_prob,
+    market_efficiency_score,
+    composite_independent_score,
+    american_to_decimal,
+    decimal_to_implied,
+    no_vig_prob,
 )
 
 # ── Импорт auth модуля ──────────────────────
@@ -2021,6 +2032,71 @@ if should_fetch or fetch_all_btn:
                     if len(_history) > 100:
                         st.session_state["odds_snapshots"][_eid] = _history[-100:]
 
+# ── Новые независимые метрики (read-only колонки) ─────────────────
+# Используется ранее сохранённый в session_state Elo-словарь
+# Добавляем: Elo Home %, Elo Edge %, MES, IndepScore
+_elo_ratings: dict = st.session_state.get("elo_ratings", {})
+if "elo_ratings" not in st.session_state:
+    st.session_state["elo_ratings"] = {}
+
+def _enrich_df_with_models(frame: pd.DataFrame) -> pd.DataFrame:
+    """
+    Добавляет к фрейму read-only колонки: Elo Home %, Elo Edge %, MES, IndepScore.
+    Не изменяет существующие EV / Kelly / сигналы.
+    """
+    if frame.empty:
+        return frame
+    _ratings = st.session_state.get("elo_ratings", {})
+    _sport_k = sport_cfg.get("key", "default")
+
+    elo_home_list  = []
+    elo_edge_list  = []
+    mes_list       = []
+    indep_list     = []
+
+    for _, row in frame.iterrows():
+        home = row.get("Хозяева", "")
+        away = row.get("Гости", "")
+        r_home = _ratings.get(home, ELO_INITIAL)
+        r_away = _ratings.get(away, ELO_INITIAL)
+
+        # Elo вероятность победы хозяев
+        elo_prob = elo_expected_prob(r_home, r_away, _sport_k)
+        elo_home_list.append(round(elo_prob * 100, 2))
+
+        # Market implied prob хозяев из no-vig
+        try:
+            h_am = float(row.get("Odds Хозяева (Am)") or 0)
+            a_am = float(row.get("Odds Гости (Am)") or 0)
+            d_am = row.get("Odds Ничья (Am)")
+            h_dec = american_to_decimal(h_am) if h_am else 0.0
+            a_dec = american_to_decimal(a_am) if a_am else 0.0
+            d_dec = american_to_decimal(float(d_am)) if d_am and str(d_am) != "nan" else None
+            if h_dec > 0 and a_dec > 0:
+                dec_list = [h_dec, a_dec] + ([d_dec] if d_dec else [])
+                nvp = no_vig_prob(dec_list)
+                market_home_pct = nvp[0] * 100 if nvp else 50.0
+                ev_val = float(row.get("EV Edge %", 0) or 0)
+                mes_val = market_efficiency_score([h_dec, a_dec] + ([d_dec] if d_dec else []))
+                edge = elo_edge_vs_market(elo_prob, market_home_pct)
+                indep = composite_independent_score(edge, ev_val, mes_val)
+                elo_edge_list.append(round(edge, 2))
+                mes_list.append(mes_val)
+                indep_list.append(indep)
+            else:
+                elo_edge_list.append(None); mes_list.append(None); indep_list.append(None)
+        except Exception:
+            elo_edge_list.append(None); mes_list.append(None); indep_list.append(None)
+
+    out = frame.copy()
+    out["Elo Home %"]   = elo_home_list
+    out["Elo Edge %"]   = elo_edge_list
+    out["MES"]          = mes_list
+    out["IndepScore"]   = indep_list
+    return out
+
+df = _enrich_df_with_models(df)
+
 # ─────────────────────────────────────────────
 #  METRICS
 # ─────────────────────────────────────────────
@@ -2634,11 +2710,32 @@ with tab_table:
     sel = st.selectbox("Фильтр по матчу", match_opts)
     show = df[df["Матч"]==sel] if sel!="Все матчи" else df
     show = show[[c for c in show.columns if not c.startswith("_")]]
+
+    # Переключатель: показывать новые модельные колонки
+    _show_models = st.toggle("🧠 Показать Elo / MES / IndepScore", value=False, key="tbl_show_models")
+    if not _show_models:
+        _model_cols = ["Elo Home %", "Elo Edge %", "MES", "IndepScore"]
+        show = show[[c for c in show.columns if c not in _model_cols]]
+
     st.dataframe(show, use_container_width=True, hide_index=True,
                  height=min(500, 56+len(show)*35))
     st.download_button("⬇️ CSV", show.to_csv(index=False).encode(),
         f"odds_{sport_cfg['key']}_{market_key}_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
         mime="text/csv")
+
+    # Пояснение модельных метрик
+    if _show_models:
+        with st.expander("ℹ️ Что означают модельные колонки"):
+            st.markdown("""
+| Колонка | Описание |
+|---|---|
+| **Elo Home %** | Вероятность победы хозяев по Elo (начальный рейтинг 1500, K=20/15) |
+| **Elo Edge %** | Разница между Elo% и рыночной no-vig вероятностью. >0 = Elo выше рынка |
+| **MES** | Market Efficiency Score (0–100). 100 = очень согласованный рынок, 0 = шумный |
+| **IndepScore** | Composite Independent Score (0–100): Elo 45%% + EV 35%% + MES 20%% |
+
+> ⚠️ Elo использует нейтральный старт 1500 для всех команд до накопления исторических данных. Используй как дополнительный сигнал, не как замену Kelly/EV.
+            """)
 
 # ── TAB 2: CHARTS ─────────────────────────────
 with tab_chart:

@@ -397,7 +397,8 @@ def confidence_score_v2(
 
     # Fair probability bonus (выше вероятность → чуть меньше ценности, но выше надёжность)
     # Для фаворитов (>60%) и явных аутсайдеров (<30%) бонус ниже
-    fp = fair_prob_pct
+    # Bayesian shrinkage: регрессия к 50% при малом числе книг — устраняет переуверенность
+    fp = bayesian_shrink_prob(fair_prob_pct, n_books)
     if fp >= 30 and fp <= 70:
         fp_bonus = min(fp - 33, 15)
     else:
@@ -762,3 +763,221 @@ def make_h2h_row(match, home, away, bm, h_am, a_am,
         "Odds Гости (Am)":    a_am,
         "Odds Ничья (Am)":    d_am,
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  11. ELO RATING — независимая оценка силы команд
+# ─────────────────────────────────────────────────────────────────────────────
+
+ELO_INITIAL = 1500.0
+ELO_K = {
+    "americanfootball_nfl": 20.0,
+    "soccer_epl":           20.0,
+    "basketball_nba":       15.0,
+    "default":              20.0,
+}
+ELO_HOME_ADV = {
+    "americanfootball_nfl": 65.0,
+    "soccer_epl":           60.0,
+    "basketball_nba":       100.0,
+    "default":              65.0,
+}
+
+
+def elo_expected_prob(r_home: float, r_away: float, sport_key: str = "default") -> float:
+    """Вероятность победы хозяев по Elo (с учётом home advantage)."""
+    h = ELO_HOME_ADV.get(sport_key, ELO_HOME_ADV["default"])
+    return round(1 / (1 + 10 ** ((r_away - (r_home + h)) / 400)), 6)
+
+
+def elo_update_pair(
+    r_home: float, r_away: float, home_win: bool, sport_key: str = "default"
+) -> tuple:
+    """Обновляет Elo после матча. Возвращает (new_home_rating, new_away_rating)."""
+    k = ELO_K.get(sport_key, ELO_K["default"])
+    exp_home = elo_expected_prob(r_home, r_away, sport_key)
+    s_home = 1.0 if home_win else 0.0
+    s_away = 1.0 - s_home
+    new_home = r_home + k * (s_home - exp_home)
+    new_away = r_away + k * (s_away - (1.0 - exp_home))
+    return round(new_home, 3), round(new_away, 3)
+
+
+def elo_edge_vs_market(elo_home_prob: float, market_home_prob_pct: float) -> float:
+    """
+    Разница между Elo-вероятностью и рыночной implied probability (в пп).
+    Положительное значение = Elo выше рынка → потенциальная ценность.
+    """
+    return round((elo_home_prob - market_home_prob_pct / 100.0) * 100.0, 4)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  12. CLOSING LINE VALUE (CLV)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def clv_pct(open_dec: float, close_dec: float) -> float:
+    """
+    CLV в процентных пунктах implied probability.
+    Положительное значение = ставка по лучшей цене, чем closing line.
+    """
+    if open_dec <= 0 or close_dec <= 0:
+        return 0.0
+    return round((1 / open_dec - 1 / close_dec) * 100, 4)
+
+
+def avg_clv_pct(values: list) -> float:
+    """Средний CLV по списку значений."""
+    if not values:
+        return 0.0
+    return round(sum(values) / len(values), 4)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  13. BAYESIAN SHRINKAGE
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def bayesian_shrink_prob(fair_prob_pct: float, n_books: int, alpha: float = 3.0) -> float:
+    """
+    Регрессия вероятности к 50% при малом числе источников.
+    alpha — сила априора (рекомендуется 3.0).
+    """
+    n = max(int(n_books), 0)
+    w_prior = alpha / (alpha + n) if (alpha + n) > 0 else 1.0
+    shrunk = fair_prob_pct * (1 - w_prior) + 50.0 * w_prior
+    return round(shrunk, 4)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  14. MARKET EFFICIENCY SCORE
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def market_efficiency_score(dec_odds_list: list) -> float:
+    """
+    Насколько рынок согласован по одному исходу у разных букмекеров.
+    100 = очень согласован, 0 = шумный / неустоявшийся.
+    Основан на коэффициенте вариации decimal odds.
+    """
+    vals = [float(x) for x in dec_odds_list if x and float(x) > 0]
+    if len(vals) < 2:
+        return 50.0
+    mean_val = sum(vals) / len(vals)
+    if mean_val <= 0:
+        return 0.0
+    variance = sum((x - mean_val) ** 2 for x in vals) / len(vals)
+    std = variance ** 0.5
+    cv = std / mean_val
+    score = max(0.0, 100.0 * (1.0 - 10.0 * cv))
+    return round(score, 2)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  15. SIMPLE RATING SYSTEM (SRS)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def compute_srs(games: list, iterations: int = 12) -> dict:
+    """
+    Итерационный алгоритм SRS: оценивает силу команды в очках с поправкой
+    на силу соперников.
+
+    games = [
+        {"home": "Chiefs", "away": "Bills", "home_score": 27, "away_score": 21},
+        ...
+    ]
+    Возвращает dict {team_name: srs_rating}.
+    """
+    teams: set = set()
+    for g in games:
+        teams.add(g["home"])
+        teams.add(g["away"])
+
+    ratings = {team: 0.0 for team in teams}
+
+    for _ in range(iterations):
+        totals = {team: 0.0 for team in teams}
+        counts = {team: 0 for team in teams}
+
+        for g in games:
+            home = g["home"]
+            away = g["away"]
+            margin = float(g["home_score"]) - float(g["away_score"])
+
+            totals[home] += margin + ratings[away]
+            totals[away] += -margin + ratings[home]
+            counts[home] += 1
+            counts[away] += 1
+
+        for team in teams:
+            ratings[team] = round(totals[team] / counts[team], 4) if counts[team] else 0.0
+
+    return ratings
+
+
+def srs_projected_spread(
+    home_team: str,
+    away_team: str,
+    ratings: dict,
+    home_adv_points: float = 2.5,
+) -> float:
+    """
+    Прогноз спреда на основе SRS.
+    Положительное значение = хозяева фавориты.
+    """
+    return round(
+        ratings.get(home_team, 0.0) - ratings.get(away_team, 0.0) + home_adv_points,
+        3,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  16. POISSON TOTALS MODEL
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def poisson_pmf(lmbda: float, k: int) -> float:
+    """P(X=k) для распределения Пуассона с параметром lmbda."""
+    if lmbda <= 0 or k < 0:
+        return 0.0
+    return round((lmbda ** k) * math.exp(-lmbda) / math.factorial(k), 10)
+
+
+def poisson_over_prob(lambda_home: float, lambda_away: float, total_line: float) -> float:
+    """
+    Вероятность Over total_line (в %) по модели Пуассона.
+    Experimental model — для NFL использовать только как ориентир,
+    т.к. распределение очков не идеально пуассоновское.
+    """
+    total_lambda = max(lambda_home, 0.0) + max(lambda_away, 0.0)
+    cutoff = int(total_line)
+    prob_under_or_equal = sum(poisson_pmf(total_lambda, k) for k in range(cutoff + 1))
+    return round((1.0 - prob_under_or_equal) * 100.0, 4)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  17. COMPOSITE INDEPENDENT SCORE
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _clamp01(x: float) -> float:
+    return max(0.0, min(1.0, x))
+
+
+def composite_independent_score(
+    elo_edge_pct: float,
+    ev_edge_pct: float,
+    mes: float,
+) -> float:
+    """
+    Итоговый независимый скор (0–100), объединяющий Elo, EV и MES.
+    Использовать только как дополнительную колонку, не как замену Kelly/EV.
+
+    Веса: Elo 45%, Market EV 35%, Market Inefficiency 20%.
+    """
+    elo_signal        = _clamp01(max(elo_edge_pct, 0.0) / 12.0)
+    market_signal     = _clamp01(max(ev_edge_pct,  0.0) / 10.0)
+    efficiency_signal = _clamp01((100.0 - mes)     / 100.0)
+    score = 100.0 * (0.45 * elo_signal + 0.35 * market_signal + 0.20 * efficiency_signal)
+    return round(score, 2)
