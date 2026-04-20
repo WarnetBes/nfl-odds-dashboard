@@ -981,3 +981,171 @@ def composite_independent_score(
     efficiency_signal = _clamp01((100.0 - mes)     / 100.0)
     score = 100.0 * (0.45 * elo_signal + 0.35 * market_signal + 0.20 * efficiency_signal)
     return round(score, 2)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  18. MARGIN-OF-VICTORY ELO (Elo с поправкой на счёт)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def mov_multiplier(score_diff: float) -> float:
+    """
+    Множитель Margin-of-Victory для Elo.
+    Крупная победа обновляет рейтинг сильнее.
+    M = ln(|MOV| + 1)
+    """
+    return round(math.log(abs(float(score_diff)) + 1.0), 6)
+
+
+def elo_update_with_margin(
+    rating: float,
+    expected: float,
+    score: float,
+    score_diff: float,
+    sport_key: str = "americanfootball_nfl",
+) -> float:
+    """
+    Elo-обновление с поправкой на маржу победы.
+    R' = R + K × M × (S − E)
+    score: 1.0 — победа, 0.0 — поражение, 0.5 — ничья
+    score_diff: разница очков (положительная для победителя)
+    """
+    k = ELO_K.get(sport_key, ELO_K["americanfootball_nfl"])
+    m = mov_multiplier(score_diff)
+    return round(rating + k * m * (score - expected), 3)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  19. РАСШИРЕННЫЙ CLV + POISSON HELPERS
+# ─────────────────────────────────────────────────────────────────────────────
+
+def clv_from_american(open_am: float, close_am: float) -> float:
+    """
+    CLV из американских коэффициентов.
+    CLV = (1/D_close − 1/D_open) × 100
+    Положительный CLV → ты открыл ставку до того, как рынок сдвинулся в ту же сторону
+    (закрывающий коэффициент хуже открывающего — beat the close).
+    Пример: open=-110, close=-120 → CLV > 0 (рынок сдвинулся против тебя)
+    """
+    # american_to_decimal(0) = 1.0 — невалидно (нет выплаты), отсекаем
+    if open_am == 0 or close_am == 0:
+        return 0.0
+    d_open  = american_to_decimal(open_am)
+    d_close = american_to_decimal(close_am)
+    if d_open <= 1.0 or d_close <= 1.0:
+        return 0.0
+    return round((1.0 / d_close - 1.0 / d_open) * 100.0, 4)
+
+
+def poisson_total_under_prob(
+    lambda_home: float, lambda_away: float, total_line: float
+) -> float:
+    """
+    Вероятность Under total_line (в %) по модели Пуассона.
+    Комплемент к poisson_over_prob.
+    """
+    return round(100.0 - poisson_over_prob(lambda_home, lambda_away, total_line), 4)
+
+
+def lambda_from_stats(
+    avg_gf: float,
+    avg_ga: float,
+    opp_avg_ga: float,
+    opp_avg_gf: float,
+    league_avg: float,
+    home: bool = True,
+) -> float:
+    """
+    Ожидаемые голы/очки команды по Dixon-Coles параметризации.
+    λ = league_avg × Att_i × Def_j × HFA
+    Att_i = avg_gf / league_avg,  Def_j = opp_avg_ga / league_avg
+    HFA: 1.1 (хозяева) / 0.9 (гости)
+    """
+    if league_avg <= 0:
+        return max(avg_gf, 0.1)
+    att  = avg_gf      / league_avg
+    def_ = opp_avg_ga  / league_avg
+    hfa  = 1.1 if home else 0.9
+    return round(league_avg * att * def_ * hfa, 4)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  20. КАЛИБРОВКА И ИСТОРИЧЕСКАЯ АНАЛИТИКА
+# ─────────────────────────────────────────────────────────────────────────────
+
+def clamp_0_100(x: float) -> float:
+    """Зажать значение в [0, 100]. Публичный alias для _clamp01-based логики."""
+    return max(0.0, min(100.0, float(x)))
+
+
+def brier_score(prob_list: list, outcome_list: list) -> float:
+    """
+    Brier Score — метрика калибровки вероятностных предсказаний.
+    BS = (1/N) × Σ (p_i − y_i)²
+    Чем ближе к 0 — тем лучше. Случайная модель: 0.25.
+    prob_list: предсказанные вероятности [0.0–1.0]
+    outcome_list: фактические исходы [1 или 0]
+    """
+    if not prob_list or not outcome_list:
+        return 0.0
+    if len(prob_list) != len(outcome_list):
+        return 0.0
+    errors = [(float(p) - float(y)) ** 2 for p, y in zip(prob_list, outcome_list)]
+    return round(sum(errors) / len(errors), 6)
+
+
+def log_loss_score(prob_list: list, outcome_list: list, eps: float = 1e-7) -> float:
+    """
+    Log-Loss (кросс-энтропия) — строже Brier, штрафует за уверенные ошибки.
+    LL = −(1/N) × Σ [y×ln(p) + (1−y)×ln(1−p)]
+    Чем меньше — тем лучше.
+    """
+    if not prob_list or not outcome_list:
+        return 0.0
+    if len(prob_list) != len(outcome_list):
+        return 0.0
+    total = 0.0
+    for p, y in zip(prob_list, outcome_list):
+        p = max(eps, min(1.0 - eps, float(p)))
+        y = float(y)
+        total += y * math.log(p) + (1.0 - y) * math.log(1.0 - p)
+    return round(-total / len(prob_list), 6)
+
+
+def roi_percent(profits: list, stakes: list) -> float:
+    """
+    ROI по истории ставок.
+    ROI = (Σ profit / Σ stake) × 100
+    profits: список прибылей (отрицательные — проигрыш)
+    stakes:  список размеров ставок (всегда положительные)
+    """
+    total_stake  = sum(float(s) for s in stakes)
+    total_profit = sum(float(p) for p in profits)
+    if total_stake <= 0:
+        return 0.0
+    return round((total_profit / total_stake) * 100.0, 4)
+
+
+def yield_percent(profits: list, stakes: list) -> float:
+    """Alias для roi_percent (европейская терминология)."""
+    return roi_percent(profits, stakes)
+
+
+def win_rate(outcomes: list) -> float:
+    """
+    Процент выигрышных ставок.
+    outcomes: список [1, 0, 1, ...] (1 = win)
+    """
+    if not outcomes:
+        return 0.0
+    return round(sum(1 for o in outcomes if float(o) == 1.0) / len(outcomes) * 100.0, 2)
+
+
+def expected_value_from_history(
+    avg_odds_dec: float, win_rate_pct: float
+) -> float:
+    """
+    Ожидаемое EV% на основе исторической win rate.
+    EV = (p × (D−1) − (1−p)) × 100
+    """
+    p = win_rate_pct / 100.0
+    return round((p * (avg_odds_dec - 1.0) - (1.0 - p)) * 100.0, 2)

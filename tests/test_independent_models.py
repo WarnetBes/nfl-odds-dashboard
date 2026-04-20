@@ -301,3 +301,186 @@ def test_confidence_score_v2_more_books_less_shrinkage():
     # fair_prob=65 → выходит за [30,70], поэтому fp_bonus=0 в обоих случаях
     # но c_many должен иметь больший book_bonus
     assert c_many >= c_few
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  БЛОК 18: MOV Elo
+# ═════════════════════════════════════════════════════════════════════════════
+
+from utils import (
+    mov_multiplier,
+    elo_update_with_margin,
+)
+
+
+def test_mov_multiplier_non_negative():
+    """MOV multiplier всегда >= 0."""
+    assert mov_multiplier(0)   >= 0.0
+    assert mov_multiplier(7)   >= 0.0
+    assert mov_multiplier(-14) >= 0.0   # abs берётся внутри
+
+
+def test_mov_multiplier_zero_gives_zero():
+    """При разнице 0: ln(1) = 0."""
+    assert mov_multiplier(0) == 0.0
+
+
+def test_mov_multiplier_larger_margin_gives_larger_mult():
+    """Больший счёт → больший множитель."""
+    assert mov_multiplier(28) > mov_multiplier(3)
+
+
+def test_elo_update_with_margin_win_increases():
+    """Победа (score=1.0) → рейтинг растёт."""
+    new = elo_update_with_margin(1500.0, 0.5, 1.0, 14)
+    assert new > 1500.0
+
+
+def test_elo_update_with_margin_loss_decreases():
+    """Поражение (score=0.0) → рейтинг падает."""
+    new = elo_update_with_margin(1500.0, 0.5, 0.0, 14)
+    assert new < 1500.0
+
+
+def test_elo_update_with_margin_symmetric():
+    """Ничья при симметричном ожидании → рейтинг почти не меняется."""
+    new = elo_update_with_margin(1500.0, 0.5, 0.5, 0)
+    assert abs(new - 1500.0) < 0.01
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  БЛОК 19: CLV от американских + Poisson Under + lambda_from_stats
+# ═════════════════════════════════════════════════════════════════════════════
+
+from utils import (
+    clv_from_american,
+    poisson_total_under_prob,
+    lambda_from_stats,
+)
+
+
+def test_clv_from_american_open_better_positive():
+    """Открытая линия -110 лучше закрывающей -120 → CLV > 0."""
+    result = clv_from_american(-110, -120)
+    assert result > 0.0
+
+
+def test_clv_from_american_close_better_negative():
+    """Открытая линия -120 хуже закрывающей -110 → CLV < 0."""
+    result = clv_from_american(-120, -110)
+    assert result < 0.0
+
+
+def test_clv_from_american_invalid_returns_zero():
+    """Нулевые/невалидные коэффициенты → 0.0."""
+    assert clv_from_american(0, -110) == 0.0
+    assert clv_from_american(-110, 0) == 0.0
+
+
+def test_poisson_total_under_prob_range():
+    """Вероятность Under в пределах [0, 100]."""
+    result = poisson_total_under_prob(2.5, 2.0, 4.5)
+    assert 0.0 <= result <= 100.0
+
+
+def test_poisson_over_plus_under_equals_100():
+    """P(Over) + P(Under) = 100 (с допуском 1%)."""
+    from utils import poisson_over_prob
+    over  = poisson_over_prob(2.5, 2.0, 4.5)
+    under = poisson_total_under_prob(2.5, 2.0, 4.5)
+    assert abs(over + under - 100.0) < 1.0   # пуш (ровно на линии) → небольшой зазор
+
+
+def test_lambda_from_stats_home_advantage():
+    """Хозяева (home=True) получают больший λ, чем гости."""
+    lh = lambda_from_stats(1.8, 1.2, 1.5, 1.3, 1.4, home=True)
+    la = lambda_from_stats(1.8, 1.2, 1.5, 1.3, 1.4, home=False)
+    assert lh > la
+
+
+def test_lambda_from_stats_zero_league_avg():
+    """Нулевое league_avg → fallback, не делим на ноль."""
+    result = lambda_from_stats(1.8, 1.2, 1.5, 1.3, 0.0, home=True)
+    assert result > 0.0
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  БЛОК 20: Калибровка и историческая аналитика
+# ═════════════════════════════════════════════════════════════════════════════
+
+from utils import (
+    clamp_0_100,
+    brier_score,
+    log_loss_score,
+    roi_percent,
+    win_rate,
+    expected_value_from_history,
+)
+
+
+def test_clamp_0_100_in_range():
+    assert clamp_0_100(50.0)  == 50.0
+    assert clamp_0_100(-10.0) == 0.0
+    assert clamp_0_100(150.0) == 100.0
+
+
+def test_brier_score_perfect():
+    """Идеальная модель: BS = 0."""
+    assert brier_score([1.0, 0.0], [1, 0]) == 0.0
+
+
+def test_brier_score_random():
+    """Случайная 50/50: BS ≈ 0.25."""
+    result = brier_score([0.5, 0.5, 0.5, 0.5], [1, 0, 1, 0])
+    assert abs(result - 0.25) < 1e-6
+
+
+def test_brier_score_empty_returns_zero():
+    assert brier_score([], []) == 0.0
+
+
+def test_brier_score_mismatched_lengths():
+    assert brier_score([0.7, 0.3], [1]) == 0.0
+
+
+def test_log_loss_perfect():
+    """Уверенная правильная модель: LL ≈ 0."""
+    result = log_loss_score([0.999, 0.001], [1, 0])
+    assert result < 0.01
+
+
+def test_log_loss_empty_returns_zero():
+    assert log_loss_score([], []) == 0.0
+
+
+def test_roi_percent_positive():
+    """Прибыльная серия → ROI > 0."""
+    assert roi_percent([10, 5, -5], [100, 100, 100]) > 0.0
+
+
+def test_roi_percent_breakeven():
+    assert roi_percent([0, 0], [100, 100]) == 0.0
+
+
+def test_roi_percent_empty_stakes():
+    assert roi_percent([], []) == 0.0
+
+
+def test_win_rate_correct():
+    assert win_rate([1, 0, 1, 1, 0]) == 60.0
+
+
+def test_win_rate_empty():
+    assert win_rate([]) == 0.0
+
+
+def test_expected_value_from_history_positive():
+    """55% winrate при коэффе 1.91 → положительный EV."""
+    ev = expected_value_from_history(1.91, 55.0)
+    assert ev > 0.0
+
+
+def test_expected_value_from_history_negative():
+    """45% winrate при коэффе 1.91 → отрицательный EV."""
+    ev = expected_value_from_history(1.91, 45.0)
+    assert ev < 0.0
