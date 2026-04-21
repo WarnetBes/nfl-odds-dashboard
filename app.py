@@ -786,6 +786,12 @@ SHEET_HEADERS = [
     "Дата", "Время МСК", "Спорт", "Матч", "Букмекер",
     "Исход", "Odds (Am)", "Odds (Dec)", "Implied %",
     "No-Vig Fair %", "EV Edge %",
+    "Open Odds (Am)",    # = Odds (Am) в момент логирования
+    "Close Odds (Am)",   # заполняется вручную перед стартом матча
+    "CLV %",             # считается автоматически при заполнении Close Odds
+    "Result",            # 1 = win, 0 = loss, "" = pending
+    "Profit ($)",        # фактическая прибыль/убыток
+    "Kelly Stake ($)",   # размер ставки Kelly при логировании
 ]
 
 
@@ -847,8 +853,19 @@ def log_value_bets_to_sheets(vdf: pd.DataFrame, sport_label: str, spreadsheet_ur
     date_str = now.strftime("%d.%m.%Y")
     time_str = now.strftime("%H:%M")
 
+    _kf = st.session_state.get("kelly_fraction", 0.25)
+    _bankroll = float(st.session_state.get("bankroll", 1000.0))
     rows_to_add = []
     for _, row in vdf.iterrows():
+        # Kelly Stake
+        try:
+            _ev_pct = float(str(row.get("EV Edge %", "0")).replace("%","").replace("+",""))
+            _fair_p  = float(str(row.get("No-Vig Fair %", "50")).replace("%","")) / 100.0
+            _dec     = float(str(row.get("Odds (Dec)", "2")))
+            _k_frac  = kelly_fraction(_ev_pct / 100.0, _dec) if _ev_pct > 0 else 0
+            _k_stake = round(_k_frac * _kf * _bankroll, 2)
+        except Exception:
+            _k_stake = ""
         rows_to_add.append([
             date_str,
             time_str,
@@ -861,6 +878,12 @@ def log_value_bets_to_sheets(vdf: pd.DataFrame, sport_label: str, spreadsheet_ur
             str(row.get("Implied %", "")),
             str(row.get("No-Vig Fair %", "")),
             str(row.get("EV Edge %", "")),
+            str(row.get("Odds (Am)", "")),  # Open Odds = текущий коэфф
+            "",   # Close Odds — заполняется вручную
+            "",   # CLV % — считается после
+            "",   # Result
+            "",   # Profit
+            str(_k_stake) if _k_stake else "",
         ])
 
     try:
@@ -892,6 +915,64 @@ def read_history_from_sheets(spreadsheet_url: str, sheet_name: str = "ValueBets"
 # ─────────────────────────────────────────────
 #  HELPERS — PDF EXPORT
 # ─────────────────────────────────────────────
+
+def save_history_to_sheets(df: pd.DataFrame, spreadsheet_url: str) -> tuple:
+    """Сохраняет отредактированную историю (результаты) обратно в Google Sheets."""
+    client, err = get_gspread_client()
+    if err:
+        return False, err
+    ws, err = get_or_create_sheet(client, spreadsheet_url)
+    if err:
+        return False, err
+    try:
+        ws.clear()
+        ws.append_row(SHEET_HEADERS, value_input_option="USER_ENTERED")
+        for col in SHEET_HEADERS:
+            if col not in df.columns:
+                df[col] = ""
+        rows = df[SHEET_HEADERS].fillna("").values.tolist()
+        if rows:
+            ws.append_rows([[str(v) for v in r] for r in rows], value_input_option="USER_ENTERED")
+        return True, f"✅ Сохранено {len(rows)} строк"
+    except Exception as e:
+        return False, f"Ошибка записи: {e}"
+
+
+def save_elo_to_sheets(ratings: dict, spreadsheet_url: str) -> tuple:
+    """Сохраняет Elo-рейтинги на лист 'EloRatings'."""
+    client, err = get_gspread_client()
+    if client is None:
+        return False, err or "No client"
+    try:
+        sh = client.open_by_url(spreadsheet_url)
+        try:
+            ws = sh.worksheet("EloRatings")
+            ws.clear()
+        except Exception:
+            ws = sh.add_worksheet(title="EloRatings", rows=200, cols=3)
+        _ts = datetime.now(MSK).strftime("%Y-%m-%d %H:%M")
+        rows = [["team", "rating", "updated_at"]] + [
+            [t, r, _ts] for t, r in sorted(ratings.items())
+        ]
+        ws.update(rows, "A1")
+        return True, ""
+    except Exception as e:
+        return False, str(e)
+
+
+def load_elo_from_sheets(spreadsheet_url: str) -> tuple:
+    """Загружает Elo-рейтинги с листа 'EloRatings'."""
+    client, err = get_gspread_client()
+    if client is None:
+        return {}, err or "No client"
+    try:
+        sh = client.open_by_url(spreadsheet_url)
+        ws = sh.worksheet("EloRatings")
+        records = ws.get_all_records()
+        return {r["team"]: float(r["rating"]) for r in records if r.get("team")}, ""
+    except Exception as e:
+        return {}, str(e)
+
 
 def generate_pdf_report(
     vdf: pd.DataFrame,
@@ -1376,6 +1457,27 @@ if not st.session_state.saved_api_key and _env_api_key:
 # ─────────────────────────────────────────────
 #  SIDEBAR
 # ─────────────────────────────────────────────
+# ── #7 Загрузка настроек из URL-параметров при старте ──────────────────────────────
+try:
+    _qp = st.query_params
+    if "bankroll" in _qp and not st.session_state.get("_qp_loaded"):
+        try:
+            st.session_state["bankroll"] = float(_qp["bankroll"])
+        except Exception:
+            pass
+    if "sport" in _qp and not st.session_state.get("_qp_loaded"):
+        st.session_state["last_sport"] = _qp["sport"]
+    if "region" in _qp and not st.session_state.get("_qp_loaded"):
+        st.session_state["last_region"] = _qp["region"]
+    if "horizon" in _qp and not st.session_state.get("_qp_loaded"):
+        try:
+            st.session_state["horizon_h"] = int(_qp["horizon"])
+        except Exception:
+            pass
+    st.session_state["_qp_loaded"] = True
+except Exception:
+    pass
+
 with st.sidebar:
     st.markdown("## ⚙️ Настройки")
 
@@ -1493,12 +1595,58 @@ with st.sidebar:
 
     # ── Auto-refresh ──────────────────────────
     st.markdown("**🔄 Авто-обновление**")
-    auto_on = st.toggle("Каждые 5 минут", value=st.session_state.auto_refresh)
+    auto_on = st.toggle("Авто-обновление", value=st.session_state.auto_refresh)
     st.session_state.auto_refresh = auto_on
+    if auto_on:
+        _refresh_options = {"3 мин": 180, "5 мин": 300, "15 мин": 900, "30 мин": 1800}
+        _refresh_label = st.selectbox(
+            "Интервал",
+            list(_refresh_options.keys()),
+            index=1,
+            key="refresh_interval_sel",
+            label_visibility="collapsed",
+        )
+        st.session_state["refresh_interval"] = _refresh_options[_refresh_label]
+
+    # ── Горизонт матчей ───────────────────────────
+    st.divider()
+    st.markdown("**⏱️ Горизонт матчей**")
+    horizon_h = st.slider(
+        "Матчи ближайших X часов",
+        min_value=1, max_value=72,
+        value=int(st.session_state.get("horizon_h", 24)),
+        step=1, key="horizon_slider",
+        help="Показывать матчи начинающиеся в течение указанного количества часов"
+    )
+    st.session_state["horizon_h"] = horizon_h
+
+    # ── Быстрые пресеты ───────────────────────────
+    st.markdown("**⚡ Быстрые пресеты**")
+    _pre_col1, _pre_col2 = st.columns(2)
+    with _pre_col1:
+        if st.button("⚡ Pinnacle", use_container_width=True, key="preset_pinnacle"):
+            st.session_state["selected_bm_state"] = ["pinnacle"]
+            st.rerun()
+    with _pre_col2:
+        if st.button("💎 EV>5%", use_container_width=True, key="preset_ev5"):
+            st.session_state["min_edge_override"] = 5.0
+            st.rerun()
+    if st.button("🔥 Conf≥70%", use_container_width=True, key="preset_highconf"):
+        st.session_state["min_conf_override"] = 70
+        st.rerun()
+    if st.button("✖ Сброс пресетов", use_container_width=True, key="reset_presets"):
+        for _k in ("min_edge_override", "min_conf_override"):
+            st.session_state.pop(_k, None)
+        st.rerun()
+
+    # ── API quota ──────────────────────────────────
+    _api_rem = st.session_state.get("remaining", "?")
+    st.caption(f"📡 API запросов осталось: **{_api_rem}**")
 
     # ── Value bets ────────────────────────────
     st.divider()
-    min_edge = st.slider("💎 Мин. EV Edge %", 0.0, 15.0, 1.0, 0.5)
+    _me_default = float(st.session_state.pop("min_edge_override", 1.0))
+    min_edge = st.slider("💎 Мин. EV Edge %", 0.0, 15.0, _me_default, 0.5)
 
     # ── Gmail alerts ──────────────────────────
     st.divider()
@@ -1762,6 +1910,20 @@ with st.sidebar:
             st.dataframe(_elo_view, use_container_width=True, hide_index=True, height=160)
 
     st.divider()
+    # ── #7 Сохранить настройки в URL ───────────────────────────────────────
+    if st.button("🔗 Поделиться настройками", use_container_width=True, key="share_settings_btn",
+                  help="Скопирует URL с текущими настройками"):
+        try:
+            _share_bankroll = int(st.session_state.get("bankroll", 1000))
+            _share_horizon  = int(st.session_state.get("horizon_h", 72))
+            st.query_params.update({
+                "bankroll": str(_share_bankroll),
+                "horizon":  str(_share_horizon),
+            })
+            st.success("✅ URL обновлён! Скопируй адрес из браузера.")
+        except Exception as _e:
+            st.warning(f"Нельзя обновить URL: {_e}")
+    st.divider()
     st.caption("📡 [The Odds API](https://the-odds-api.com) · [ESPN API](https://site.api.espn.com)")
 
 # ─────────────────────────────────────────────
@@ -1837,9 +1999,10 @@ st.markdown(
 # Auto-refresh countdown bar
 now_ts = time.time()
 elapsed = now_ts - st.session_state.last_fetch_ts
-remaining_s = max(0, AUTO_REFRESH - elapsed)
+_eff_refresh = int(st.session_state.get("refresh_interval", AUTO_REFRESH))
+remaining_s = max(0, _eff_refresh - elapsed)
 if st.session_state.auto_refresh and st.session_state.events is not None:
-    pct = int((AUTO_REFRESH - remaining_s) / AUTO_REFRESH * 100)
+    pct = int((_eff_refresh - remaining_s) / _eff_refresh * 100)
     col_prog, col_timer = st.columns([7,3])
     with col_prog:
         st.progress(pct, text=f"Следующее обновление через {int(remaining_s//60)}м {int(remaining_s%60)}с")
@@ -1867,7 +2030,7 @@ fetch_all_btn   = locals().get("fetch_all_btn", False)
 should_fetch = fetch_btn or mobile_fetch_btn
 if (st.session_state.auto_refresh
         and st.session_state.events is not None
-        and elapsed >= AUTO_REFRESH):
+        and elapsed >= _eff_refresh):
     should_fetch = True
 
 # ─────────────────────────────────────────────
@@ -1972,7 +2135,7 @@ elif should_fetch:
 # ─────────────────────────────────────────────
 if st.session_state.auto_refresh and st.session_state.events is not None:
     elapsed_now = time.time() - st.session_state.last_fetch_ts
-    wait_ms = max(1000, int((AUTO_REFRESH - elapsed_now) * 1000))
+    wait_ms = max(1000, int((_eff_refresh - elapsed_now) * 1000))
     st.markdown(f"""
     <script>
     setTimeout(function(){{window.location.reload()}}, {wait_ms});
@@ -2016,10 +2179,24 @@ def _event_in_week(ev):
     except Exception:
         return True
 
+# horizon_h фильтр — оставляем только матчи в пределах N часов
+_horizon_h = int(st.session_state.get("horizon_h", 72))
+_now_utc = datetime.utcnow()
+
 filtered_events = []
 for ev in st.session_state.events:
     if not _event_in_week(ev):
         continue
+    # Проверяем горизонт часов
+    _ct = ev.get("commence_time", "")
+    if _ct and _horizon_h < 72:  # 72 = «без ограничения» (макс. в слайдере)
+        try:
+            _ev_dt = datetime.fromisoformat(_ct.replace("Z", "+00:00")).replace(tzinfo=None)
+            _hours_to_start = (_ev_dt - _now_utc).total_seconds() / 3600
+            if _hours_to_start < 0 or _hours_to_start > _horizon_h:
+                continue
+        except Exception:
+            pass
     bms = [b for b in ev.get("bookmakers",[]) if not selected_bm or b.get("title") in selected_bm]
     if bms:
         filtered_events.append({**ev, "bookmakers": bms})
@@ -2110,9 +2287,11 @@ if should_fetch or fetch_all_btn:
                     if len(_history) > 100:
                         st.session_state["odds_snapshots"][_eid] = _history[-100:]
 
-# ── Блок 7: Line Movement Alert ──────────────────────────────────────────────
+# ── Блок 7: Line Movement Alert + Steam Move Detection (#6) ─────────────────────
+_steam_alerted_ids = st.session_state.get("steam_alerted_ids", set())
 for _eid_lm, _snaps_lm in st.session_state.get("odds_snapshots", {}).items():
     if len(_snaps_lm) >= 2:
+        # Линейные движения
         _lm_alerts = detect_line_movement(_snaps_lm, threshold_pct=3.0)
         for _lm_alert in _lm_alerts:
             try:
@@ -2123,6 +2302,19 @@ for _eid_lm, _snaps_lm in st.session_state.get("odds_snapshots", {}).items():
                 )
             except Exception:
                 pass
+        # Steam Move Detection (#6)
+        try:
+            _steam = detect_steam_move(_snaps_lm, window_sec=300, threshold_pct=2.5)
+            if _steam and _eid_lm not in _steam_alerted_ids:
+                _match_name = _snaps_lm[-1].get("match", _eid_lm[:20])
+                st.toast(
+                    f"🚨 STEAM MOVE: {_match_name} — {_steam.get('direction','?')} {_steam.get('move_pct',0):+.1f}% за 5 мин",
+                    icon="🚨",
+                )
+                _steam_alerted_ids.add(_eid_lm)
+        except Exception:
+            pass
+st.session_state["steam_alerted_ids"] = _steam_alerted_ids
 
 
 # ── Новые независимые метрики (read-only колонки) ─────────────────
@@ -2422,8 +2614,15 @@ with tab_signals:
 
     else:  # h2h
         sdf = _build_betting_signals_v2(df, has_draw, sport_cfg["key"])
+        # #8 Применяем min_conf_override из пресетов
+        _min_conf_filter = int(st.session_state.pop("min_conf_override", 0))
+        if not sdf.empty and _min_conf_filter > 0 and "_conf" in sdf.columns:
+            sdf = sdf[sdf["_conf"] >= _min_conf_filter].copy()
         if sdf.empty:
-            st.warning("Недостаточно данных для генерации сигналов. Загрузи коэффициенты сначала.")
+            st.info(
+                f"📊 Нет сигналов с Confidence ≥ {_min_conf_filter if _min_conf_filter else 0}. "
+                f"Сбрось пресет фильтров или загрузи коэффициенты."
+            ) if _min_conf_filter > 0 else st.warning("Недостаточно данных для генерации сигналов. Загрузи коэффициенты сначала.")
         else:
             # Legend
             st.markdown(
@@ -2503,43 +2702,63 @@ with tab_signals:
                 else:
                     st.info("Загрузи коэффициенты для получения независимых метрик.")
 
-            for _, sig in sdf.iterrows():
+            # #10 Collapse/Expand карточки матчей
+            _expand_all = st.checkbox("📂 Развернуть все карточки", value=True, key="expand_all_signals")
+
+            for _sig_idx, (_, sig) in enumerate(sdf.iterrows()):
                 conf       = int(sig["_conf"]) if "_conf" in sig.index else 0
                 edge_val   = float(sig["_edge"]) if "_edge" in sig.index else 0.0
                 signal_str = str(sig["Сигнал"])
                 is_sharp   = str(sig.get("Sharp Reference", "")).startswith("⚡")
-
-                if is_sharp:
+                # Превью для expander
+                _icon = "⚡" if is_sharp else ("🟢" if conf >= 70 else ("🟡" if conf >= 40 else ("🔵" if edge_val > 0 else "⚪")))
+                _expander_label = f"{_icon} {sig['На кого ставить']} | {sig['Матч']} | EV: {sig.get('EV Edge %','?')} | Conf: {conf}/100"
+                with st.expander(_expander_label, expanded=_expand_all):
+                  if is_sharp:
                     card_bg, border, text_clr = T['sharp_bg'],    "#a78bfa", "#7c3aed" if _is_light else "#a78bfa"
-                elif conf >= 70:
+                  elif conf >= 70:
                     card_bg, border, text_clr = T['strong_bg'],   "#16a34a" if _is_light else "#4ade80", "#166534" if _is_light else "#4ade80"
-                elif conf >= 40:
+                  elif conf >= 40:
                     card_bg, border, text_clr = T['moderate_bg'], "#ca8a04" if _is_light else "#fde68a", "#78350f" if _is_light else "#fde68a"
-                elif edge_val > 0:
+                  elif edge_val > 0:
                     card_bg, border, text_clr = T['weak_bg'],     "#3b82f6", "#1d4ed8" if _is_light else "#93c5fd"
-                else:
+                  else:
                     card_bg, border, text_clr = T['none_bg'],     T['border'], T['none_text']
 
-                kelly_pct_str = str(sig.get("Kelly ¼ %", "0.00%"))
-                try:
+                  kelly_pct_str = str(sig.get("Kelly ¼ %", "0.00%"))
+                  try:
                     kelly_pct_val = float(kelly_pct_str.replace("%", ""))
                     kelly_dollar  = round(bankroll * kelly_pct_val / 100, 2)
-                except Exception:
+                  except Exception:
                     kelly_pct_val = 0.0
                     kelly_dollar  = 0.0
 
-                sharp_badge = (
+                  sharp_badge = (
                     '<span style="background:#7c3aed;color:#fff;border-radius:6px;'
                     'padding:2px 8px;font-size:11px;margin-left:8px">⚡ Sharp EV</span>'
-                ) if is_sharp else ""
+                  ) if is_sharp else ""
 
-                kelly_cell_bg  = T['kelly_bg']   if kelly_dollar > 0 else T['bg']
-                kelly_cell_brd = T['kelly_brd']  if kelly_dollar > 0 else ""
-                kelly_color    = T['kelly_text'] if kelly_dollar > 0 else T['muted']
-                ev_color       = ("#16a34a" if _is_light else "#4ade80") if edge_val > 0 else ("#dc2626" if _is_light else "#f87171")
-                ref_color      = "#7c3aed" if (is_sharp and _is_light) else ("#a78bfa" if is_sharp else T['text2'])
+                  kelly_cell_bg  = T['kelly_bg']   if kelly_dollar > 0 else T['bg']
+                  kelly_cell_brd = T['kelly_brd']  if kelly_dollar > 0 else ""
+                  kelly_color    = T['kelly_text'] if kelly_dollar > 0 else T['muted']
+                  ev_color       = ("#16a34a" if _is_light else "#4ade80") if edge_val > 0 else ("#dc2626" if _is_light else "#f87171")
+                  ref_color      = "#7c3aed" if (is_sharp and _is_light) else ("#a78bfa" if is_sharp else T['text2'])
+                  # #5 Composite Score в карточке
+                  try:
+                    _elo_h = st.session_state.get("elo_ratings", {}).get(str(sig.get("На кого ставить", "")), ELO_INITIAL)
+                    _elo_a = ELO_INITIAL
+                    _elo_edge_sig = elo_edge_vs_market(_elo_h, _elo_a, abs(edge_val) / 100 + 0.5)
+                    _mes_sig = market_efficiency_score(df[df["Матч"] == sig["Матч"]])
+                    _comp_sig = composite_independent_score(_elo_edge_sig, edge_val, _mes_sig)
+                  except Exception:
+                    _comp_sig = conf
+                  _comp_color = (
+                    "#4ade80" if _comp_sig >= 70
+                    else "#fde68a" if _comp_sig >= 40
+                    else "#f87171"
+                  )
 
-                st.markdown(f"""
+                  st.markdown(f"""
 <div style="background:{card_bg};border:2px solid {border};border-radius:12px;padding:16px 20px;margin-bottom:14px">
   <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
     <div>
@@ -2576,15 +2795,55 @@ with tab_signals:
       <div style="font-size:10px;color:{T['muted']}">📊 Референс</div>
       <div style="font-size:14px;font-weight:700;color:{ref_color}">{sig.get("Sharp Reference", "Консенсус")}</div>
     </div>
+    <div style="background:{T['bg2']};border:2px solid {_comp_color};border-radius:8px;padding:8px 12px">
+      <div style="font-size:10px;color:{T['muted']}">🧩 Composite Score</div>
+      <div style="font-size:14px;font-weight:700;color:{_comp_color}">{_comp_sig:.0f}/100</div>
+    </div>
   </div>
   <div style="margin-top:10px">
-    <div style="font-size:10px;color:{T['muted']};margin-bottom:4px">Уверенность сигнала: {conf}/100</div>
+    <div style="font-size:10px;color:{T['muted']};margin-bottom:4px">Уверенность сигнала: {conf}/100 &nbsp;|&nbsp; Composite: {_comp_sig:.0f}/100</div>
     <div style="background:{T['bg_dark']};border-radius:4px;height:8px;overflow:hidden">
       <div style="background:{border};height:8px;width:{conf}%;border-radius:4px;transition:width .4s"></div>
     </div>
   </div>
   {'<div style="font-size:11px;color:' + T['muted'] + ';margin-top:8px">🔄 ' + str(sig["Другие исходы"]) + '</div>' if sig["Другие исходы"] else ''}
 </div>""", unsafe_allow_html=True)
+                  # #12 Кнопка Отправить в Telegram
+                  _tg_col1, _tg_col2 = st.columns([3, 1])
+                  with _tg_col2:
+                    if st.button("📤 Telegram", key=f"tg_sig_{_sig_idx}", use_container_width=True,
+                                 help="Отправить сигнал в Telegram бот"):
+                        try:
+                            import requests as _req
+                            _tg_token = (
+                                st.secrets.get("TELEGRAM_BOT_TOKEN", "")
+                                or "7145666214:AAHivgv39C5OpwDCrxbKgpkxergKQdpapVw"
+                            )
+                            _tg_chat = (
+                                st.secrets.get("TELEGRAM_CHAT_ID", "")
+                                or "772096123"
+                            )
+                            _tg_text = (
+                                f"🎯 *Сигнал:* {signal_str}\n"
+                                f"🏆 *Матч:* {sig['Матч']}\n"
+                                f"⏰ *Время:* {sig['Время']}\n"
+                                f"🎯 *Ставить на:* {sig['На кого ставить']}\n"
+                                f"💰 *Оддс:* {sig['Odds (Am)']} ({sig['Odds (Dec)']:.2f})\n"
+                                f"📊 *EV Edge:* {sig['EV Edge %']}\n"
+                                f"🧩 *Composite:* {_comp_sig:.0f}/100\n"
+                                f"🏦 *Келли ¼:* ${kelly_dollar:.2f}"
+                            )
+                            _r = _req.post(
+                                f"https://api.telegram.org/bot{_tg_token}/sendMessage",
+                                json={"chat_id": _tg_chat, "text": _tg_text, "parse_mode": "Markdown"},
+                                timeout=8,
+                            )
+                            if _r.status_code == 200:
+                                st.success("✅ Отправлено!")
+                            else:
+                                st.error(f"Ошибка Telegram: {_r.status_code}")
+                        except Exception as _te:
+                            st.error(f"Ошибка: {_te}")
 
             # Bar chart
             _conf_vals = sdf["_conf"].tolist()
@@ -3127,7 +3386,23 @@ with tab_value:
                 st.warning("📧 Gmail-alert выключен\n*(включи в боковой панели)*")
 
         if vdf_all.empty:
-            st.warning(f"Нет value bets с EV ≥ {min_edge}%. Снизь порог или добавь больше букмекеров.")
+            # #9 Пустое состояние с call-to-action
+            st.markdown(f"""
+<div style="background:{T['none_bg']};border:2px dashed {T['border']};border-radius:12px;padding:32px;text-align:center">
+  <div style="font-size:48px;margin-bottom:12px">🔍</div>
+  <div style="font-size:20px;font-weight:700;color:{T['text']};margin-bottom:8px">Нет value bets с EV &ge; {min_edge}%</div>
+  <div style="color:{T['text2']};margin-bottom:20px">Рынок эффициентен — попробуй снизить порог или добавить букмекеров.</div>
+  <div style="display:flex;gap:16px;justify-content:center;flex-wrap:wrap">
+    <div style="background:{T['bg2']};border-radius:8px;padding:12px 20px;text-align:left">
+      <div style="font-weight:700;color:{T['text']}">ℹ️ Почему нет сигналов?</div>
+      <div style="color:{T['text2']};font-size:13px;margin-top:6px">• Порог EV Edge слишком высокий: {min_edge}%<br>• Мало букмекеров для сравнения<br>• Рынок корректно оценил вероятности</div>
+    </div>
+    <div style="background:{T['bg2']};border-radius:8px;padding:12px 20px;text-align:left">
+      <div style="font-weight:700;color:{T['text']}">🛠️ Что сделать?</div>
+      <div style="color:{T['text2']};font-size:13px;margin-top:6px">• ↓ Снизь порог EV в сайдбаре (1–2%)<br>• + Добавь Pinnacle, Bet365<br>• 🔄 Обнови данные коэффициентов</div>
+    </div>
+  </div>
+</div>""", unsafe_allow_html=True)
         else:
             st.success(f"✅ Найдено **{len(vdf_all)}** value bet(s) с EV Edge ≥ {min_edge}%")
             # Highlight high EV
@@ -3315,19 +3590,75 @@ with tab_history:
             except Exception:
                 pass
 
-            st.dataframe(hist_display, use_container_width=True,
-                         height=min(600, 60 + len(hist_display) * 36))
-            st.download_button("⬇️ Скачать CSV",
-                               hist_display.to_csv(index=False).encode(),
-                               "value_bets_history.csv", mime="text/csv")
+            # ── #1 st.data_editor с Result / Close Odds / CLV% ──────────────────────
+            st.markdown("#### ✏️ Редактирование: Result / Close Odds / CLV%")
+            st.caption("Заполни Close Odds — CLV% считается автоматически. Result: W / L / P")
+            _edit_df = hist_display.copy()
+            for _ecol in ["Result", "Close Odds(Am)", "CLV%", "Profit($)"]:
+                if _ecol not in _edit_df.columns:
+                    _edit_df[_ecol] = ""
+            _col_cfg = {
+                "Result": st.column_config.SelectboxColumn(
+                    "Result", options=["W", "L", "P", ""], width="small"
+                ),
+                "Close Odds(Am)": st.column_config.NumberColumn(
+                    "Close Odds (Am)", format="%d", width="medium"
+                ),
+                "CLV%": st.column_config.NumberColumn(
+                    "CLV %", format="%.2f", width="small", disabled=True
+                ),
+                "Profit($)": st.column_config.NumberColumn(
+                    "Profit ($)", format="%.2f", width="medium"
+                ),
+            }
+            _edited = st.data_editor(
+                _edit_df, column_config=_col_cfg,
+                use_container_width=True,
+                height=min(500, 60 + len(_edit_df) * 36),
+                num_rows="fixed", key="hist_data_editor",
+            )
+            # #2 Авто-CLV% после ввода Close Odds
+            _open_col = next((c for c in _edited.columns if "Open" in c and "Am" in c), None)
+            if _open_col and "Close Odds(Am)" in _edited.columns:
+                for _ri in range(len(_edited)):
+                    try:
+                        _oa = float(str(_edited.iloc[_ri][_open_col]).replace("+","") or 0)
+                        _ca = float(str(_edited.iloc[_ri]["Close Odds(Am)"]).replace("+","") or 0)
+                        if _oa != 0 and _ca != 0:
+                            _edited.at[_edited.index[_ri], "CLV%"] = round(clv_from_american(_oa, _ca), 3)
+                    except Exception:
+                        pass
+            st.session_state["history_df"] = _edited
+            _save_col1, _save_col2 = st.columns(2)
+            with _save_col1:
+                if st.button("💾 Сохранить в Sheets", use_container_width=True, key="save_hist_btn"):
+                    _gs_u = st.session_state.get("gsheet_url", "")
+                    if not _gs_u:
+                        st.warning("Укажи URL Google Таблицы в сайдбаре.")
+                    else:
+                        with st.spinner("Сохраняю…"):
+                            _ok_s, _msg_s = save_history_to_sheets(_edited, _gs_u)
+                        if _ok_s:
+                            st.success(f"✅ {_msg_s}")
+                        else:
+                            st.error(f"❌ {_msg_s}")
+            with _save_col2:
+                st.download_button("⬇️ Скачать CSV",
+                                   _edited.to_csv(index=False).encode(),
+                                   "value_bets_history.csv", mime="text/csv")
         else:
-            st.info("📊 История пуста. \n\n"
-                    "Чтобы заполнить: \n"
-                    "1. Загрузи коэффициенты (рынок **H2H**) \n"
-                    "2. Нажми **‘📝 Записать сейча’** в боковой панели \n"
-                    "3. Нажми **‘📛 Обновить / Читать’** выше")
-
-        # Instructions for setup
+            st.markdown(f"""
+<div style="background:{T['none_bg']};border:2px dashed {T['border']};border-radius:12px;padding:32px;text-align:center">
+  <div style="font-size:48px;margin-bottom:12px">📊</div>
+  <div style="font-size:20px;font-weight:700;color:{T['text']};margin-bottom:8px">История ставок пуста</div>
+  <div style="color:{T['text2']};margin-bottom:16px">Чтобы начать отслеживать CLV и результаты:</div>
+  <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap">
+    <div style="background:{T['bg2']};border-radius:8px;padding:10px 16px;color:{T['text2']};font-size:13px">1️⃣ Загрузи коэффициенты (H2H)</div>
+    <div style="background:{T['bg2']};border-radius:8px;padding:10px 16px;color:{T['text2']};font-size:13px">2️⃣ Нажми «📝 Записать» в сайдбаре</div>
+    <div style="background:{T['bg2']};border-radius:8px;padding:10px 16px;color:{T['text2']};font-size:13px">3️⃣ Нажми «📥 Обновить / Читать» выше</div>
+  </div>
+</div>""", unsafe_allow_html=True)
+                # Instructions for setup
         with st.expander("ℹ️ Настройка Google Sheets", expanded=False):
             st.markdown("""
 **Шаг 1.** Создай Google Cloud проект и включи **Google Sheets API + Google Drive API**.
@@ -3376,6 +3707,71 @@ client_x509_cert_url = "..."
             "Устойчивый положительный CLV по истории — главный признак реального edge."
         )
 
+
+
+    # ── #11 Parlay EV-калькулятор ──────────────────────────────────────────────────
+    st.divider()
+    st.markdown("#### 🎲 Parlay EV-калькулятор")
+    st.caption("Добавь ноги парлая — получишь общий EV, комбинированный коэффициент и рекомендованную Kelly-ставку.")
+    if "parlay_legs" not in st.session_state:
+        st.session_state["parlay_legs"] = [{"odds_am": -110, "win_prob": 52.4}]
+
+    _p_add, _p_clear = st.columns(2)
+    with _p_add:
+        if st.button("+ Добавить ногу", key="parlay_add_leg", use_container_width=True):
+            st.session_state["parlay_legs"].append({"odds_am": -110, "win_prob": 52.4})
+    with _p_clear:
+        if st.button("🗑️ Очистить", key="parlay_clear", use_container_width=True):
+            st.session_state["parlay_legs"] = [{"odds_am": -110, "win_prob": 52.4}]
+
+    _parlay_valid = True
+    _parlay_probs = []
+    _parlay_odds_dec = []
+    for _li, _leg in enumerate(st.session_state["parlay_legs"]):
+        _lc1, _lc2 = st.columns(2)
+        with _lc1:
+            _leg_odds = st.number_input(
+                f"Нога {_li+1} — Оддс (Am)", value=int(_leg.get("odds_am", -110)),
+                step=5, key=f"parlay_odds_{_li}"
+            )
+        with _lc2:
+            _leg_prob = st.number_input(
+                f"Нога {_li+1} — Ваша вер-ть (%)", value=float(_leg.get("win_prob", 52.4)),
+                min_value=1.0, max_value=99.0, step=0.5, key=f"parlay_prob_{_li}"
+            )
+        st.session_state["parlay_legs"][_li] = {"odds_am": _leg_odds, "win_prob": _leg_prob}
+        try:
+            _parlay_odds_dec.append(american_to_decimal(float(_leg_odds)))
+            _parlay_probs.append(float(_leg_prob) / 100)
+        except Exception:
+            _parlay_valid = False
+
+    if _parlay_valid and len(_parlay_probs) > 0:
+        try:
+            _pev = parlay_ev(_parlay_probs, _parlay_odds_dec)
+            _pk  = parlay_kelly_stake(_parlay_probs, _parlay_odds_dec, fraction=0.25)
+            _combined_dec = 1.0
+            for _d in _parlay_odds_dec:
+                _combined_dec *= _d
+            _combined_am_raw = (_combined_dec - 1) * 100
+            _combined_am_str = f"+{_combined_am_raw:.0f}" if _combined_am_raw >= 0 else f"{_combined_am_raw:.0f}"
+            _pk_dollar = float(bankroll) * _pk
+            _pev_color = "#4ade80" if _pev > 0 else "#f87171"
+            _pm1, _pm2, _pm3, _pm4 = st.columns(4)
+            with _pm1: st.metric("Парлай EV", f"{_pev*100:+.2f}%")
+            with _pm2: st.metric("Комб. Оддс (Am)", _combined_am_str)
+            with _pm3: st.metric("Комб. Оддс (Dec)", f"{_combined_dec:.2f}x")
+            with _pm4: st.metric("Kelly ¼ Ставка", f"${_pk_dollar:.2f}")
+            st.markdown(
+                f'<div style="background:{T["none_bg"]};border:2px solid {_pev_color};border-radius:8px;'
+                f'padding:12px 16px;margin-top:8px"><b>EV парлая: '
+                f'<span style="color:{_pev_color}">{_pev*100:+.2f}%</span></b> '
+                f'— {"✅ Положительный ожидаемый результат" if _pev > 0 else "❌ Отрицательный EV — рынок против тебя"}'
+                f'</div>',
+                unsafe_allow_html=True
+            )
+        except Exception as _pe:
+            st.warning(f"Ошибка расчёта: {_pe}")
 
 # ── TAB 7: BANKROLL STATISTICS ───────────────────────────────────────────────
 with tab_bankroll:
