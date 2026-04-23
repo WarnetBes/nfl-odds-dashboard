@@ -1498,21 +1498,51 @@ with st.sidebar:
 
     # ── Odds API ──────────────────────────────
     _key_from_cloud = bool(_env_api_key)
+
+    # Подтягиваем ключ из query_params (сохранённая закладка)
+    if not st.session_state.saved_api_key:
+        try:
+            _qp_key = st.query_params.get("odds_key", "")
+            if _qp_key:
+                st.session_state.saved_api_key = _qp_key
+        except Exception:
+            pass
+
     if _key_from_cloud:
         st.success("🔑 API ключ подключён автоматически")
         st.caption("Задан через Streamlit Secrets — ввод не нужен")
         _typed_key = ""
     else:
-        _typed_key = st.text_input("🔑 The Odds API Key", type="password",
+        _typed_key = st.text_input(
+            "🔑 The Odds API Key",
+            type="password",
             value=st.session_state.saved_api_key,
             placeholder="Пусто = демо-режим",
-            help="https://the-odds-api.com — 500 запросов/мес бесплатно")
-    # Persist key across reruns (manual input valid only in this session)
+            help="https://the-odds-api.com — 500 запросов/мес бесплатно",
+        )
+
     if _typed_key:
         st.session_state.saved_api_key = _typed_key
+
     api_key = st.session_state.saved_api_key
+
     if api_key and not _key_from_cloud:
-        st.caption("✅ API ключ сохранён в сессии")
+        _key_saved_in_url = (st.query_params.get("odds_key", "") == api_key)
+        _k1, _k2 = st.columns(2)
+        with _k1:
+            st.caption("✅ API ключ сохранён в сессии")
+        with _k2:
+            if _key_saved_in_url:
+                st.caption("📌 Запомнен в URL")
+            else:
+                if st.button("📌 Запомнить", key="save_api_key_btn",
+                             help="Сохранит ключ в URL — добавь в закладки и ключ будет вводиться автоматически",
+                             use_container_width=True):
+                    try:
+                        st.query_params["odds_key"] = api_key
+                        st.success("✅ Ключ запомнён! Сохрани закладку на этот URL.")
+                    except Exception as _qpe:
+                        st.warning(f"Не удалось сохранить: {_qpe}")
 
     # ── Sport / League filter ─────────────────
     SPORT_FILTER_OPTIONS = ["Все", "🌐 Все виды спорта", "⚽ Только Football", "🏈 Только NFL", "🏀 Только NBA"]
