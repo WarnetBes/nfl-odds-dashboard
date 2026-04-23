@@ -1804,7 +1804,8 @@ with st.sidebar:
     if st.button("🩺 Проверить подключения", use_container_width=True, key="diag_btn"):
         # --- The Odds API ---
         _diag_key = (
-            st.session_state.get("api_key", "")
+            st.session_state.get("saved_api_key", "")
+            or st.session_state.get("api_key", "")
             or (st.secrets.get("ODDS_API_KEY", "") if hasattr(st, "secrets") else "")
             or _os.environ.get("ODDS_API_KEY", "")
         )
