@@ -2139,7 +2139,7 @@ elif should_fetch:
             if not _auto_df.empty:
                 _auto_vdf = _compute_value_bets_v2(_auto_df, has_draw, min_edge, sport_cfg["key"], bankroll)
                 if not _auto_vdf.empty:
-                    _ok_gs, _msg_gs = log_value_bets_to_sheets(_auto_vdf, sport_label,
+                    _ok_gs, _msg_gs, _cnt_gs = log_value_bets_to_sheets(_auto_vdf, sport_label,
                                                                 _gs_auto_url)
                     if _ok_gs:
                         st.toast(f"📊 Google Sheets: записано {len(_auto_vdf)} value bets", icon="✅")
@@ -3581,7 +3581,7 @@ with tab_history:
         if _gs_write:
             if not vdf_all.empty and market_key == "h2h":
                 with st.spinner("Записываю value bets в Google Sheets…"):
-                    ok, msg = log_value_bets_to_sheets(vdf_all, cur_sport, _gs_url)
+                    ok, msg, _cnt = log_value_bets_to_sheets(vdf_all, cur_sport, _gs_url)
                 if ok:
                     st.success(f"✅ {msg}")
                 else:
