@@ -723,21 +723,22 @@ def parse_to_df(events, market_key, has_draw):
 def send_gmail_alert(sender_email: str, sender_password: str, recipient: str,
                      vdf: pd.DataFrame, sport_label: str):
     """Отправляет HTML письмо с таблицей value bets через Gmail SMTP."""
+    import html as _html
     if vdf.empty: return False, "Нет value bets для отправки"
     try:
         rows_html = ""
         for _, row in vdf.iterrows():
             rows_html += f"""
             <tr>
-              <td>{row['Матч']}</td>
-              <td>{row['Время']}</td>
-              <td>{row['Букмекер']}</td>
-              <td><b>{row['Исход']}</b></td>
-              <td>{row['Odds (Am)']}</td>
-              <td>{row['Odds (Dec)']}</td>
-              <td>{row['Implied %']}</td>
-              <td>{row['No-Vig Fair %']}</td>
-              <td style="color:#4ade80;font-weight:bold">{row['EV Edge %']}</td>
+              <td>{_html.escape(str(row['Матч']))}</td>
+              <td>{_html.escape(str(row['Время']))}</td>
+              <td>{_html.escape(str(row['Букмекер']))}</td>
+              <td><b>{_html.escape(str(row['Исход']))}</b></td>
+              <td>{_html.escape(str(row['Odds (Am)']))}</td>
+              <td>{_html.escape(str(row['Odds (Dec)']))}</td>
+              <td>{_html.escape(str(row['Implied %']))}</td>
+              <td>{_html.escape(str(row['No-Vig Fair %']))}</td>
+              <td style="color:#4ade80;font-weight:bold">{_html.escape(str(row['EV Edge %']))}</td>
             </tr>"""
         now_str = datetime.now(MSK).strftime("%d.%m.%Y %H:%M МСК")
         html = f"""
@@ -769,8 +770,8 @@ def send_gmail_alert(sender_email: str, sender_password: str, recipient: str,
         return True, f"✅ Письмо отправлено на {recipient}"
     except smtplib.SMTPAuthenticationError:
         return False, "❌ Ошибка авторизации Gmail. Проверь email и App Password."
-    except Exception as e:
-        return False, f"❌ Ошибка отправки: {e}"
+    except Exception:
+        return False, "❌ Ошибка отправки письма. Проверь настройки SMTP и сеть."
 
 # ─────────────────────────────────────────────
 #  HELPERS — GOOGLE SHEETS
@@ -4132,8 +4133,9 @@ VALUE BETS (EV ≥ {min_edge}%):
     if run_ai and _oai_key:
         # ── Если crewai установлен — используем настоящих агентов ─────────────
         if _crewai_ok:
-            import os as _os3
-            _os3.environ["OPENAI_API_KEY"] = _oai_key
+            # Note: API key is passed directly to the LLM constructor below
+            # instead of writing it to os.environ (which would leak it to all
+            # code running in the same process).
             try:
                 from crewai import Agent, Task, Crew, LLM
 
