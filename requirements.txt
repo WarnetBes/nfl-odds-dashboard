@@ -11,7 +11,7 @@ openai>=1.0.0
 reportlab>=4.0.0
 
 # Telegram Bot
-python-telegram-bot>=20.0
+python-telegram-bot>=22.7
 
 # Auth
 # extra-streamlit-components 0.1.81 несовместим с Streamlit 1.35+
